@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.0)
 
 find_package(Qt5 5.5.0 REQUIRED Core Network)
 
-# extract nedit-ng version info if source directory is a git repo
-message(STATUS "Extracting nedit-ng version info with git...")
+# extract nedit version info if source directory is a git repo
+message(STATUS "Extracting nedit version info with git...")
 find_package(Git)
 if(Git_FOUND)
 	execute_process(
@@ -21,7 +21,7 @@ if(Git_FOUND)
 		string(STRIP ${GIT_ERROR} GIT_ERROR)
 		message(STATUS "Git error: ${GIT_ERROR}")
 	else()
-		message(STATUS "Unable to extract nedit-ng version info from git")
+		message(STATUS "Unable to extract nedit version info from git")
 	endif()
 
 	execute_process(
@@ -39,7 +39,7 @@ if(Git_FOUND)
 		string(STRIP ${GIT_ERROR} GIT_ERROR)
 		message(STATUS "Git error: ${GIT_ERROR}")
 	else()
-		message(STATUS "Unable to extract nedit-ng commit id from git")
+		message(STATUS "Unable to extract nedit commit id from git")
 	endif()
 
 
@@ -58,7 +58,7 @@ if(Git_FOUND)
                 string(STRIP ${GIT_ERROR} GIT_ERROR)
                 message(STATUS "Git error: ${GIT_ERROR}")
         else()
-                message(STATUS "Unable to extract nedit-ng branch name from git")
+                message(STATUS "Unable to extract nedit branch name from git")
         endif()
 
 

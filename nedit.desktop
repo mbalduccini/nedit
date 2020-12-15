@@ -1,6 +1,6 @@
 [Desktop Entry]
-GenericName=NEdit-ng
-Name=nedit-ng
+GenericName=NEdit
+Name=nedit
 MimeType=text/plain;
 Exec=nedit %U
 Icon=nedit

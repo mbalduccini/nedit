@@ -49,7 +49,7 @@ QString DialogAbout::createInfoString() {
 	 gitExtra += tr("   Git commit: %1\n").arg(QLatin1String(NEDIT_COMMIT_GIT));
 #endif
 
-	return tr("nedit-ng version %1\n"
+	return tr("nedit version %1\n"
 			  "\n"
 			  "     Built on: %2, %3, %4\n"
 			  "      With Qt: %7\n"

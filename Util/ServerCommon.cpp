@@ -11,9 +11,9 @@
  * Create the server socket name for the server with serverName.
  * names are generated as follows as either of the following
  *
- * $RUNTIME_PATH/nedit-ng_<host_name>_<server_name>_<display>
+ * $RUNTIME_PATH/nedit6_<host_name>_<server_name>_<display>
  *
- * nedit-ng_<host_name>_<user>_<server_name>_<display>
+ * nedit6_<host_name>_<user>_<server_name>_<display>
  *
  * <server_name> is the name that can be set by the user to allow
  * for multiple servers to run on the same display. <server_name>
@@ -33,16 +33,16 @@ QString LocalSocketName(const QString &server_name) {
 		QDir().mkpath(runtimePath);
 #ifdef Q_OS_LINUX
 		QByteArray display = qgetenv("DISPLAY");
-		return QString(QLatin1String("%1/nedit-ng_%2_%3_%4")).arg(runtimePath, hostname, server_name, QString::fromLocal8Bit(display));
+		return QString(QLatin1String("%1/nedit6_%2_%3_%4")).arg(runtimePath, hostname, server_name, QString::fromLocal8Bit(display));
 #else
-		return QString(QLatin1String("%1/nedit-ng_%2_%3")).arg(runtimePath, hostname, server_name);
+		return QString(QLatin1String("%1/nedit6_%2_%3")).arg(runtimePath, hostname, server_name);
 #endif
 	} else {
 #ifdef Q_OS_LINUX
 		QByteArray display = qgetenv("DISPLAY");
-		return QString(QLatin1String("nedit-ng_%1_%2_%3_%4")).arg(GetUserName(), hostname, server_name, QString::fromLocal8Bit(display));
+		return QString(QLatin1String("nedit6_%1_%2_%3_%4")).arg(GetUserName(), hostname, server_name, QString::fromLocal8Bit(display));
 #else
-		return QString(QLatin1String("nedit-ng_%1_%2_%3")).arg(GetUserName(), hostname, server_name);
+		return QString(QLatin1String("nedit6_%1_%2_%3")).arg(GetUserName(), hostname, server_name);
 #endif
 	}
 }

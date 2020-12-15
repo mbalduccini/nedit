@@ -53,7 +53,7 @@ endif()
 
 #set_property(SOURCE NeditServer.cpp PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
 
-add_executable(nedit-ng
+add_executable(nedit
 
 	${QRC_SOURCES}
 	${APP_ICON_RESOURCE_WINDOWS}
@@ -267,15 +267,15 @@ add_executable(nedit-ng
 
 if(${X11_FOUND})
     if(Qt5X11Extras_FOUND)
-        target_compile_definitions(nedit-ng
+        target_compile_definitions(nedit
             PUBLIC -DQT_X11
         )
     endif()
 endif()
 
-target_add_warnings(nedit-ng)
+target_add_warnings(nedit)
 
-target_link_libraries(nedit-ng
+target_link_libraries(nedit
 PUBLIC
 	Util
 	Regex
@@ -293,12 +293,12 @@ PRIVATE
 	yaml-cpp
 )
 
-set_property(TARGET nedit-ng PROPERTY CXX_EXTENSIONS OFF)
-set_property(TARGET nedit-ng PROPERTY CXX_STANDARD 14)
-set_property(TARGET nedit-ng PROPERTY RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set_property(TARGET nedit PROPERTY CXX_EXTENSIONS OFF)
+set_property(TARGET nedit PROPERTY CXX_STANDARD 14)
+set_property(TARGET nedit PROPERTY RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 if(TARGET_COMPILER_MSVC)
-	set_property(TARGET nedit-ng PROPERTY WIN32_EXECUTABLE ON)
+	set_property(TARGET nedit PROPERTY WIN32_EXECUTABLE ON)
 endif()
 
-install(TARGETS nedit-ng DESTINATION bin)
+install(TARGETS nedit DESTINATION bin)

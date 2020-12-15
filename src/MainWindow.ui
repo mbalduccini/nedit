@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>NEdit-ng</string>
+   <string>NEdit</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">
@@ -1329,7 +1329,7 @@
      <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
-    <string>&amp;About NEdit-ng</string>
+    <string>&amp;About NEdit</string>
    </property>
   </action>
   <action name="action_Default_Language_Modes">
