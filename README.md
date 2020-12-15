@@ -4,9 +4,7 @@
 [![Build Status](https://travis-ci.org/eteran/nedit-ng.svg?branch=master)](https://travis-ci.org/eteran/nedit-ng)
 [![License](https://img.shields.io/badge/license-GPL2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
-nedit-ng is a Qt port of the Nirvana Editor (NEdit) version 5.6. It is intended
-to be a **drop in replacement** for nedit in every practical way, just as on 
-many systems `/usr/bin/vi` is now a symlink to `/usr/bin/vim`.
+NEdit 6.x (nedit-ng) is a Qt port of the Nirvana Editor (NEdit) version 5.6.
 
 Because it is a true port of the original code, it (at least for now) inherits 
 some (but not all) of the limitations of the original. On the other hand, some 
@@ -32,22 +30,23 @@ Dependency                                  | Version Required
 	
 ### Help Documentation
 
-NEdit had extensive help texts, which have been carefully updated and made available online here: https://eteran.github.io/nedit-ng/
+NEdit had extensive help texts, which have been carefully updated and made available 
+online here: https://eteran.github.io/nedit-ng/
 
 ### Inherited Limitations:
 
 * Text display is still ASCII only (for now).
-* Regex engine is the original nedit proprietary implementation. This was kept 
+* Regex engine is the original NEdit proprietary implementation. This was kept 
   for a few reasons:
     1. NEdit's syntax is **slightly** non-standard, and I wanted to keep 
-	   things backwards compatible for now.
-	2. NEdit's syntax highligher has very carefully created regex's which 
-	   result in things being highlighted in a way that I (and I assume other 
-	   nedit users) have grown to appreciate. A change in regex engine would
-	   likely require a rework on the syntax highlighting algorithm.
-	3. The original highligher has some insider information of the regex
-	   implementation which it uses in order to be more efficient. I could 
-	   fake this information, but at the cost of efficiency.
+       things backwards compatible for now.
+    2. NEdit's syntax highligher has very carefully created regex's which 
+       result in things being highlighted in a way that I (and I assume other 
+       NEdit users) have grown to appreciate. A change in regex engine would
+       likely require a rework on the syntax highlighting algorithm.
+    3. The original highligher has some insider information of the regex
+       implementation which it uses in order to be more efficient. I could 
+       fake this information, but at the cost of efficiency.
 
 ### Improvements already available:
 

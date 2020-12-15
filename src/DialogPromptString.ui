@@ -17,7 +17,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string>Nedit-ng</string>
+   <string>NEdit</string>
   </property>
   <property name="modal">
    <bool>true</bool>
