@@ -25,8 +25,11 @@
  */
 DialogLanguageModes::DialogLanguageModes(DialogSyntaxPatterns *dialogSyntaxPatterns, QWidget *parent, Qt::WindowFlags f)
 	: Dialog(parent, f), dialogSyntaxPatterns_(dialogSyntaxPatterns) {
+
 	ui.setupUi(this);
 	connectSlots();
+
+	ui.editDelimiters->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
 
 	CommonDialog::setButtonIcons(&ui);
 
@@ -374,7 +377,7 @@ bool DialogLanguageModes::updateLanguageList(Verbosity verbosity) {
 					int colon  = oldLM->name.indexOf(QLatin1Char(':'));
 					int oldLen = (colon == -1) ? oldLM->name.size() : colon;
 
-					auto tempName = tr("%1:%2").arg(oldLM->name.left(oldLen), newLM->name);
+					auto tempName = QStringLiteral("%1:%2").arg(oldLM->name.left(oldLen), newLM->name);
 					newLM->name   = tempName;
 				}
 			}

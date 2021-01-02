@@ -12,11 +12,17 @@
  */
 DialogAbout::DialogAbout(QWidget *parent, Qt::WindowFlags f)
 	: Dialog(parent, f) {
+
 	ui.setupUi(this);
+
+	ui.textAbout->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+	ui.textThanks->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+	ui.textTranslations->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+	ui.textLicense->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
 
 	ui.textAbout->setText(tr("%1"
 							 "\n"
-							 "NEdit 6.x (nedit-ng) was written by Evan Teran. It is intended to be a modern replacement for the Nirvana Editor (aka NEdit). The author has been using NEdit as his primary code editor for many years, and while it continues to be a superior editor in many ways, it is unfortunately showing its age. So nedit-ng was born out of a desire to have an editor that functions as close to the original as possible, but utilizing a modern toolkit (Qt). This will allow nedit-ng to enjoy the benefit of modern features such as:\n"
+							 "NEdit 6.0 (nedit-ng) was written by Evan Teran. It is intended to be a modern replacement for the Nirvana Editor (aka NEdit). The author has been using NEdit as his primary code editor for many years, and while it continues to be a superior editor in many ways, it is unfortunately showing its age. So nedit-ng was born out of a desire to have an editor that functions as close to the original as possible, but utilizing a modern toolkit (Qt). This will allow nedit-ng to enjoy the benefit of modern features such as:\n"
 							 "\n"
 							 "* Anti-aliased font rendering.\n"
 							 "* Support for internationalization.\n"
@@ -49,7 +55,7 @@ QString DialogAbout::createInfoString() {
 	gitExtra += tr("   Git commit: %1\n").arg(QLatin1String(NEDIT_COMMIT_GIT));
 #endif
 
-	return tr("nedit version %1\n"
+	return tr("NEdit version %1\n"
 			  "\n"
 			  "     Built on: %2, %3, %4\n"
 			  "      With Qt: %7\n"

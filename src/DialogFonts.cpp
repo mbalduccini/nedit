@@ -30,7 +30,7 @@ DialogFonts::DialogFonts(DocumentWidget *document, QWidget *parent, Qt::WindowFl
 	const QFont font = document ? Font::fromString(document->fontName_) : Font::fromString(Preferences::GetPrefFontName());
 
 	for (int size : QFontDatabase::standardSizes()) {
-		ui.fontSize->addItem(tr("%1").arg(size), size);
+		ui.fontSize->addItem(QStringLiteral("%1").arg(size), size);
 	}
 
 	ui.fontCombo->setCurrentFont(font);
@@ -38,6 +38,10 @@ DialogFonts::DialogFonts(DocumentWidget *document, QWidget *parent, Qt::WindowFl
 	const int n = ui.fontSize->findData(font.pointSize());
 	if (n != -1) {
 		ui.fontSize->setCurrentIndex(n);
+	}
+
+	if (!document) {
+		ui.checkApplyAll->setVisible(false);
 	}
 }
 
@@ -78,6 +82,11 @@ void DialogFonts::updateFont() {
 
 	if (document_) {
 		document_->action_Set_Fonts(fontName);
+		if (ui.checkApplyAll->isChecked()) {
+			for (DocumentWidget *document : DocumentWidget::allDocuments()) {
+				document->action_Set_Fonts(fontName);
+			}
+		}
 	} else {
 		Preferences::SetPrefFont(fontName);
 	}

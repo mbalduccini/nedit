@@ -257,6 +257,12 @@ MainWindow::MainWindow(QWidget *parent, Qt::WindowFlags flags)
 	for (MainWindow *window : windows) {
 		window->ui.action_Move_Tab_To->setEnabled(enabled);
 	}
+
+	connect(
+		this, &MainWindow::checkForChangesToFile, this, [](DocumentWidget *document) {
+			document->checkForChangesToFile();
+		},
+		Qt::QueuedConnection);
 }
 
 /**
@@ -707,6 +713,7 @@ void MainWindow::setupMenuStrings() {
 	create_shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I), this, [this]() { action_Shift_Find_Incremental(); });
 	create_shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_R), this, [this]() { action_Shift_Replace(); });
 	create_shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_M), this, [this]() { action_Shift_Goto_Matching(); });
+	create_shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_Y), this, [this]() { action_Shift_Open_Selected(); });
 
 	// This is an annoying solution... we can probably do better...
 	for (int key = Qt::Key_A; key <= Qt::Key_Z; ++key) {
@@ -1713,7 +1720,7 @@ DocumentWidget *MainWindow::findWindowWithFile(const QString &filename, const QS
 #ifdef Q_OS_UNIX
 	if (!Preferences::GetPrefHonorSymlinks()) {
 
-		QString fullname = tr("%1%2").arg(path, filename);
+		auto fullname = QStringLiteral("%1%2").arg(path, filename);
 
 		QT_STATBUF attribute;
 		if (QT_STAT(fullname.toUtf8().data(), &attribute) == 0) {
@@ -1992,6 +1999,8 @@ void MainWindow::updatePrevOpenMenu() {
 	for (int i = count; i < previousOpenFilesList_.size(); ++i) {
 		previousOpenFilesList_[i]->setVisible(false);
 	}
+
+	ui.action_Open_Previous->setEnabled(count != 0);
 }
 
 /**
@@ -2087,6 +2096,40 @@ void MainWindow::action_Open_Selected_triggered() {
 	}
 }
 
+/**
+ * @brief MainWindow::action_Shift_Open_Selected
+ */
+void MainWindow::action_Shift_Open_Selected() {
+	if (DocumentWidget *document = currentDocument()) {
+		action_Shift_Open_Selected(document);
+	}
+}
+
+/**
+ * @brief MainWindow::action_Shift_Open_Selected
+ * @param document
+ */
+void MainWindow::action_Shift_Open_Selected(DocumentWidget *document) {
+
+	emit_event("open_copied");
+
+	QString copied;
+
+	// Get the clipboard text, if there's nothing copied, do nothing
+	const QMimeData *mimeData = QApplication::clipboard()->mimeData(QClipboard::Clipboard);
+	if (mimeData->hasText()) {
+		copied = mimeData->text();
+	}
+
+	if (!copied.isEmpty()) {
+		openFile(document, copied);
+	} else {
+		QApplication::beep();
+	}
+
+	MainWindow::checkCloseEnableState();
+}
+
 QFileInfoList MainWindow::openFileHelperSystem(DocumentWidget *document, const QRegularExpressionMatch &match, QString *searchPath, QString *searchName) const {
 	const QStringList includeDirs = Preferences::GetPrefIncludePaths();
 
@@ -2100,7 +2143,7 @@ QFileInfoList MainWindow::openFileHelperSystem(DocumentWidget *document, const Q
 	for (const QString &includeDir : includeDirs) {
 		// we need to do this because someone could write #include <path/to/file.h>
 		// which confuses QDir..
-		QFileInfo fullPath = tr("%1/%2").arg(includeDir, match.captured(1));
+		QFileInfo fullPath = QStringLiteral("%1/%2").arg(includeDir, match.captured(1));
 		QString filename   = fullPath.fileName();
 		QString filepath   = fullPath.path();
 
@@ -2148,7 +2191,7 @@ QFileInfoList MainWindow::openFileHelperString(DocumentWidget *document, const Q
 	} else {
 		// we need to do this because someone could write #include "path/to/file.h"
 		// which confuses QDir..
-		QFileInfo fullPath = tr("%1/%2").arg(document->path(), text);
+		QFileInfo fullPath = QStringLiteral("%1/%2").arg(document->path(), text);
 		QString filename   = fullPath.fileName();
 		QString filepath   = fullPath.path();
 
@@ -3104,8 +3147,11 @@ void MainWindow::action_Shift_Replace_Again() {
  */
 void MainWindow::action_Mark(DocumentWidget *document, const QString &mark) {
 
-	if (mark.size() != 1 || !mark[0].isLetter()) {
-		qWarning("NEdit: action requires a single-letter label");
+	// NOTE(eteran): as per discussion#212, bookmarks from macros
+	// might not be letters! So we have looser requirements here than
+	// the UI instigated version.
+	if (mark.size() != 1) {
+		qWarning("NEdit: action requires a single-character label");
 		QApplication::beep();
 		return;
 	}
@@ -3136,6 +3182,12 @@ void MainWindow::action_Mark(DocumentWidget *document) {
 		&ok);
 
 	if (!ok) {
+		return;
+	}
+
+	if (result.size() != 1 || !result[0].isLetter()) {
+		qWarning("NEdit: action requires a single-letter label");
+		QApplication::beep();
 		return;
 	}
 
@@ -3176,8 +3228,11 @@ void MainWindow::action_Goto_Mark(DocumentWidget *document, const QString &mark,
 
 	emit_event("goto_mark", mark);
 
-	if (mark.size() != 1 || !mark[0].isLetter()) {
-		qWarning("NEdit: action requires a single-letter label");
+	// NOTE(eteran): as per discussion#212, bookmarks from macros
+	// might not be letters! So we have looser requirements here than
+	// the UI instigated version.
+	if (mark.size() != 1) {
+		qWarning("NEdit: action requires a single-character label");
 		QApplication::beep();
 		return;
 	}
@@ -3205,6 +3260,12 @@ void MainWindow::action_Goto_Mark_Dialog(DocumentWidget *document, bool extend) 
 		&ok);
 
 	if (!ok) {
+		return;
+	}
+
+	if (result.size() != 1 || !result[0].isLetter()) {
+		qWarning("NEdit: action requires a single-letter label");
+		QApplication::beep();
 		return;
 	}
 
@@ -4710,6 +4771,14 @@ DocumentWidget *MainWindow::editNewFile(MainWindow *window, const QString &geome
 	window->updateStatus(document, document->firstPane());
 	window->updateWindowTitle(document);
 	window->updateWindowHints(document);
+
+	// NOTE(eteran): addresses issue #224. When a new tab causes a reordering
+	// AND a focus event will trigger a "save/cancel" dialog
+	// we can end up with the wrong names on tabs!
+	// so we sort BEFORE we update the tab state just to be sure everything
+	// is in the right spots!
+	window->sortTabBar();
+
 	document->refreshTabState();
 
 	if (languageMode.isNull()) {
@@ -4724,7 +4793,6 @@ DocumentWidget *MainWindow::editNewFile(MainWindow *window, const QString &geome
 		document->raiseDocumentWindow();
 	}
 
-	window->sortTabBar();
 	return document;
 }
 
@@ -5382,7 +5450,7 @@ void MainWindow::focusChanged(QWidget *from, QWidget *to) {
 			endISearch();
 
 			// Check for changes to read-only status and/or file modifications
-			document->checkForChangesToFile();
+			Q_EMIT checkForChangesToFile(document);
 		}
 	}
 }
@@ -7141,7 +7209,7 @@ void MainWindow::updateMenuItems() {
 	const bool tipStat = !Tags::TipsFileList.empty();
 	const bool tagStat = !Tags::TagsFileList.empty();
 
-	for (MainWindow *window : MainWindow::allWindows()) {
+	for (MainWindow *window : MainWindow::allWindows(true)) {
 		window->ui.action_Unload_Calltips_File->setEnabled(tipStat);
 		window->ui.action_Unload_Tags_File->setEnabled(tagStat);
 		window->ui.action_Show_Calltip->setEnabled(tipStat || tagStat);
