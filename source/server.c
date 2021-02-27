@@ -330,6 +330,13 @@ static WindowInfo *findWindowOnDesktop(int tabbed, long currentDesktop)
                 return window;
             }
         }
+	/* [mbal 022721]
+	 * https://github.com/eteran/nedit-ng/issues/65
+	 * The local socket server is technically created before the 
+	 * first window, so I think that sometimes the request comes 
+	 * in "too soon" and things get mixed up.
+	 */
+	if(((WindowInfo *)WindowList)!=NULL) { return WindowList; }
     }
 
     return NULL; /* No window found on current desktop -> create new window */
