@@ -295,6 +295,9 @@ static int isLocatedOnDesktop(WindowInfo *window, long currentDesktop)
         return True; /* No desktop information available */
     
     windowDesktop = QueryDesktop(TheDisplay, window->shell);
+    if (windowDesktop == -1)
+        return True; /* [mbal 022721] No desktop information available for windows */
+
     /* Sticky windows have desktop 0xFFFFFFFF by convention */
     if (windowDesktop == currentDesktop || windowDesktop == 0xFFFFFFFFL) 
         return True; /* Desktop matches, or window is sticky */
@@ -330,13 +333,6 @@ static WindowInfo *findWindowOnDesktop(int tabbed, long currentDesktop)
                 return window;
             }
         }
-	/* [mbal 022721]
-	 * https://github.com/eteran/nedit-ng/issues/65
-	 * The local socket server is technically created before the 
-	 * first window, so I think that sometimes the request comes 
-	 * in "too soon" and things get mixed up.
-	 */
-	if(((WindowInfo *)WindowList)!=NULL) { return WindowList; }
     }
 
     return NULL; /* No window found on current desktop -> create new window */
@@ -421,6 +417,7 @@ static void processServerCommandString(char *string)
 	 */
 	if (fileLen <= 0) {
     	    for (window=WindowList; window!=NULL; window=window->next)
+
     		if (!window->filenameSet && !window->fileChanged &&
                     isLocatedOnDesktop(window, currentDesktop))
     	    	    break;
