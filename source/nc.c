@@ -736,11 +736,13 @@ static void parseCommandLine(int argc, char **argv, CommandLine *commandLine)
 		}
 	    
                 /* See below for casts */
-    		sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n%s\n%s\n%s\n%s\n%n",
+    		//sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n%s\n%s\n%s\n%s\n%n",
+    		charsWritten = sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n%s\n%s\n%s\n%s\n",
 			lineNum, read, create, iconic, tabbed, (long) strlen(path),
 			(long) strlen(toDoCommand), (long) strlen(langMode), 
                         (long) strlen(geometry),
-			path, toDoCommand, langMode, geometry, &charsWritten);
+			//path, toDoCommand, langMode, geometry, &charsWritten);
+			path, toDoCommand, langMode, geometry);
 		outPtr += charsWritten;
 		free(nameList[j]);
 
@@ -778,10 +780,12 @@ static void parseCommandLine(int argc, char **argv, CommandLine *commandLine)
                The "long" cast on strlen() is necessary because size_t
                is 64 bit on Alphas, and 32-bit on most others.  There is
                no printf format specifier for "size_t", thanx, ANSI. */
-    	    sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n%n", lineNum,
+    	    //sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n%n", lineNum,
+    	    charsWritten = sprintf(outPtr, "%d %d %d %d %d %ld %ld %ld %ld\n", lineNum,
 		    read, create, iconic, isTabbed, (long) strlen(path), 
 		    (long) strlen(toDoCommand), (long) strlen(langMode),
-		    (long) strlen(geometry), &charsWritten);
+		    //(long) strlen(geometry), &charsWritten);
+		    (long) strlen(geometry));
     	    outPtr += charsWritten;
     	    strcpy(outPtr, path);
     	    outPtr += strlen(path);
@@ -816,9 +820,11 @@ static void parseCommandLine(int argc, char **argv, CommandLine *commandLine)
      * iconic state (and optional language mode and geometry).
      */
     if (toDoCommand[0] != '\0' || fileCount == 0) {
-	sprintf(outPtr, "0 0 0 %d %d 0 %ld %ld %ld\n\n%n", iconic, tabbed,
+	//sprintf(outPtr, "0 0 0 %d %d 0 %ld %ld %ld\n\n%n", iconic, tabbed,
+	charsWritten = sprintf(outPtr, "0 0 0 %d %d 0 %ld %ld %ld\n\n", iconic, tabbed,
 		(long) strlen(toDoCommand),
-		(long) strlen(langMode), (long) strlen(geometry), &charsWritten);
+		//(long) strlen(langMode), (long) strlen(geometry), &charsWritten);
+		(long) strlen(langMode), (long) strlen(geometry));
 	outPtr += charsWritten;
 	strcpy(outPtr, toDoCommand);
 	outPtr += strlen(toDoCommand);
