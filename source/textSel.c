@@ -56,10 +56,10 @@
 
 
 #define N_SELECT_TARGETS 7
-#define N_ATOMS 11
+#define N_ATOMS 12
 enum atomIndex {A_TEXT, A_TARGETS, A_MULTIPLE, A_TIMESTAMP,
 	A_INSERT_SELECTION, A_DELETE, A_CLIPBOARD, A_INSERT_INFO,
-	A_ATOM_PAIR, A_MOTIF_DESTINATION, A_COMPOUND_TEXT};
+	A_ATOM_PAIR, A_MOTIF_DESTINATION, A_COMPOUND_TEXT, A_UTF8_STRING};
 
 /* Results passed back to the convert proc processing an INSERT_SELECTION
    request, by getInsertSelection when the selection to insert has been
@@ -180,6 +180,7 @@ void CopyToClipboard(Widget w, Time time)
     XmStringFree(s);
     if (stat != ClipboardSuccess) {
         SpinClipboardUnlock(XtDisplay(w), XtWindow(w));
+        NEditFree(text);
     	return;
     }
 
@@ -194,6 +195,9 @@ void CopyToClipboard(Widget w, Time time)
         SpinClipboardUnlock(XtDisplay(w), XtWindow(w));
     	return;
     }
+    if (((TextWidget)w)->text.textD->buffer->encoding == BUF_ENCODING_UTF8)
+        SpinClipboardCopy(XtDisplay(w), XtWindow(w), itemID, "UTF8_STRING",
+                text, length, 0, NULL);
     NEditFree(text);
     SpinClipboardEndCopy(XtDisplay(w), XtWindow(w), itemID);
     SpinClipboardUnlock(XtDisplay(w), XtWindow(w));
@@ -282,6 +286,7 @@ void InsertClipboard(Widget w, int isColumnar)
     textDisp *textD = ((TextWidget)w)->text.textD;
     textBuffer *buf = ((TextWidget)w)->text.textD->buffer;
     int cursorLineStart, column, cursorPos;
+    char *target = "STRING";
     char *string;
     long id = 0;
 
@@ -295,7 +300,11 @@ void InsertClipboard(Widget w, int isColumnar)
        size of the data that be transferred via the clipboard, and are
        generally slower and buggier, they do preserve the clipboard across
        widget destruction and even program termination. */
-    if (SpinClipboardInquireLength(XtDisplay(w), XtWindow(w), "STRING", &length)
+    if (buf->encoding == BUF_ENCODING_UTF8 &&
+            SpinClipboardInquireLength(XtDisplay(w), XtWindow(w), "UTF8_STRING", &length)
+                    == ClipboardSuccess && length != 0)
+        target = "UTF8_STRING";
+    if (SpinClipboardInquireLength(XtDisplay(w), XtWindow(w), target, &length)
     	    != ClipboardSuccess || length == 0) {
         /*
          * Possibly, the clipboard can remain in a locked state after
@@ -305,7 +314,7 @@ void InsertClipboard(Widget w, int isColumnar)
     	return;
     }
     string = (char*)NEditMalloc(length+1);
-    if (SpinClipboardRetrieve(XtDisplay(w), XtWindow(w), "STRING", string,
+    if (SpinClipboardRetrieve(XtDisplay(w), XtWindow(w), target, string,
     	    length, &retLength, &id) != ClipboardSuccess || retLength == 0) {
     	NEditFree(string);
         /*
@@ -595,12 +604,13 @@ static Boolean convertSelectionCB(Widget w, Atom *selType, Atom *target,
     XEvent nextEvent;
     
     /* target is text, string, or compound text */
-    if (*target == XA_STRING || *target == getAtom(display, A_TEXT) ||
+    if ((*target == getAtom(display, A_UTF8_STRING) && buf->encoding == BUF_ENCODING_UTF8) ||
+        *target == XA_STRING || *target == getAtom(display, A_TEXT) ||
         *target == getAtom(display, A_COMPOUND_TEXT)) {
         /* We really don't directly support COMPOUND_TEXT, but recent
            versions gnome-terminal incorrectly ask for it, even though
            don't declare that we do.  Just reply in string format. */
-    	*type = XA_STRING;
+        *type = *target == getAtom(display, A_UTF8_STRING) ? *target : XA_STRING;
     	*value = (XtPointer)BufGetSelectionText(buf);
     	*length = strlen((char *)*value);
     	*format = 8;
@@ -610,7 +620,8 @@ static Boolean convertSelectionCB(Widget w, Atom *selType, Atom *target,
     
     /* target is "TARGETS", return a list of targets we can handle */
     if (*target == getAtom(display, A_TARGETS)) {
-	targets = (Atom *)NEditMalloc(sizeof(Atom) * N_SELECT_TARGETS);
+        int nTargets = N_SELECT_TARGETS + (buf->encoding == BUF_ENCODING_UTF8);
+        targets = (Atom *)NEditMalloc(sizeof(Atom) * nTargets);
 	targets[0] = XA_STRING;
 	targets[1] = getAtom(display, A_TEXT);
 	targets[2] = getAtom(display, A_TARGETS);
@@ -618,9 +629,11 @@ static Boolean convertSelectionCB(Widget w, Atom *selType, Atom *target,
 	targets[4] = getAtom(display, A_TIMESTAMP);
 	targets[5] = getAtom(display, A_INSERT_SELECTION);
 	targets[6] = getAtom(display, A_DELETE);
+        if (buf->encoding == BUF_ENCODING_UTF8)
+            targets[7] = getAtom(display, A_UTF8_STRING);
 	*type = XA_ATOM;
 	*value = (XtPointer)targets;
-	*length = N_SELECT_TARGETS;
+        *length = nTargets;
 	*format = 32;
 	return True;
     }
@@ -881,7 +894,7 @@ static Atom getAtom(Display *display, int atomNum)
     static Atom atomList[N_ATOMS] = {0};
     static char *atomNames[N_ATOMS] = {"TEXT", "TARGETS", "MULTIPLE",
     	    "TIMESTAMP", "INSERT_SELECTION", "DELETE", "CLIPBOARD",
-    	    "INSERT_INFO", "ATOM_PAIR", "MOTIF_DESTINATION", "COMPOUND_TEXT"};
+            "INSERT_INFO", "ATOM_PAIR", "MOTIF_DESTINATION", "COMPOUND_TEXT", "UTF8_STRING"};
     
     if (atomList[atomNum] == 0)
     	atomList[atomNum] = XInternAtom(display, atomNames[atomNum], False);

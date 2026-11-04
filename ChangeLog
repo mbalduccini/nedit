@@ -1,5 +1,16 @@
 2026-11-04  classic-UTF-8
 
+        * Fix UTF-8 paste into Find/Replace/incremental-search fields: publish
+          UTF8_STRING in the Motif clipboard and PRIMARY targets so Motif does
+          not reinterpret raw UTF-8 as Latin-1. Prefer UTF8_STRING when pasting
+          into UTF-8 documents. Use the active document's Xft font in search
+          fields and restore the original render table in legacy mode. Fix
+          incremental selection-to-search cursor positions and add real dialog
+          paste, matching, replacement, font and tab-switch checks. Full Unicode
+          regex semantics and selection interoperability remain follow-on work.
+
+2026-11-04  classic-UTF-8
+
         * Linux UTF-8 phase 1: utf8proc grapheme boundaries and Unicode columns;
           safe rectangle/column edits, shifting, fill and block drags; cached
           Xft line maps and visible-cell redraw; document/default encoding and

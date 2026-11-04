@@ -72,6 +72,7 @@ char *ReplaceAllInString(const char *inString, const char *searchString,
 void BeginISearch(WindowInfo *window, int direction);
 void EndISearch(WindowInfo *window);
 void SetISearchTextCallbacks(WindowInfo *window);
+void RefreshSearchDialogFonts(WindowInfo *window);
 void FlashMatching(WindowInfo *window, Widget textW);
 void SelectToMatchingCharacter(WindowInfo *window);
 void GotoMatchingCharacter(WindowInfo *window);

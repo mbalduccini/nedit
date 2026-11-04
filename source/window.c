@@ -754,6 +754,7 @@ WindowInfo *CreateWindow(const char *name, char *geometry, int iconic)
     /* Attach the buffer to the text widget, and add callbacks for modify */
     TextSetBuffer(text, window->buffer);
     BufAddModifyCB(window->buffer, modifiedCB, window);
+    RefreshSearchDialogFonts(window);
     
     /* Designate the permanent text area as the owner for selections */
     HandleXSelections(text);
@@ -1783,6 +1784,7 @@ void SetDocumentEncoding(WindowInfo *window, int utf8)
     if (window->buffer->primary.selected && !window->buffer->primary.rectangular)
         BufSelect(window->buffer, window->buffer->primary.start, window->buffer->primary.end);
     RefreshMenuToggleStates(window);
+    RefreshSearchDialogFonts(window);
     UpdateMinPaneHeights(window);
     UpdateStatsLine(window);
 }
@@ -1793,6 +1795,7 @@ void SetUtf8Font(WindowInfo *window, const char *name)
     for (i = 0; i <= window->nPanes; i++)
         XtVaSetValues(i ? window->textPanes[i - 1] : window->textArea,
                 textNutf8Font, name, NULL);
+    RefreshSearchDialogFonts(window);
     UpdateMinPaneHeights(window);
 }
 
@@ -4016,6 +4019,7 @@ void RaiseDocument(WindowInfo *window)
 
     /* set the document as top document */
     XtVaSetValues(window->mainWin, XmNuserData, window, NULL);
+    RefreshSearchDialogFonts(window);
     
     /* show the new top document */ 
     XtVaSetValues(window->mainWin, XmNworkWindow, window->splitPane, NULL);

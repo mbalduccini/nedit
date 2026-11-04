@@ -265,6 +265,36 @@ legacy single-byte build. The following work is complete:
   Cursor redraw finds visible cells using binary search instead of traversing
   every offscreen cell.
 
+## Phase 2 progress: search dialog input
+
+Find, Replace, and incremental-search fields now use a native Motif Xft
+rendition matching the active UTF-8 document's font when Motif supports Xft.
+Font changes and tab switches refresh those shared fields; returning to an
+8-bit document restores their original render table. A UTF-8 locale is required
+for Motif to decode text input correctly.
+
+Copying from a UTF-8 document publishes `UTF8_STRING` as well as the existing
+`STRING` clipboard format. PRIMARY selections also advertise `UTF8_STRING`,
+and editor clipboard paste prefers it in UTF-8 mode. This fixes the dialog
+paste failure: Motif previously interpreted the raw UTF-8 bytes under `STRING`
+as Latin-1, displayed multiple characters, and searched for different bytes.
+Incremental selection-to-search now places its cursor using Motif character
+positions rather than byte counts.
+
+Automated application checks cover clipboard and PRIMARY paste with accented
+Latin, Greek, CJK, supplementary scalars and combining sequences; real Find
+button callbacks in literal and regex modes; replacement and incremental
+matching; Motif-to-editor clipboard paste; font restoration; and tab switching.
+A captured search-field image confirms readable Unicode rendering.
+
+This completes the search-dialog input fix, not all of Phase 2. Exact Unicode
+text works in literal searches and as literal text within regex patterns. The
+regex engine still operates on bytes for `.`, character classes, repetition and
+other constructs; Unicode case folding and word boundaries remain pending.
+Full legacy clipboard conversion, inbound PRIMARY negotiation and secondary
+selection interoperability also remain to be audited. The existing `STRING`
+format retains raw bytes for compatibility with legacy NEdit.
+
 ## Verification
 
 `tests/README.md` describes the build and checks. The automated corpus exercises
@@ -285,8 +315,9 @@ still use NEdit's established whole-document wrap counting.
 
 Phases 2 and 3 remain open:
 
-- Clipboard X selection protocols, Unicode search/regex/case conversion, syntax
-  patterns and macro string APIs retain their legacy behavior. Macros and custom
+- Search dialog input and UTF-8 clipboard tagging are implemented as described
+  above. Full clipboard interoperability, Unicode search/regex/case conversion,
+  syntax patterns and macro string APIs remain pending. Macros and custom
   smart-indent programs still receive byte offsets; they may deliberately create
   malformed UTF-8. Decoder recovery preserves those bytes rather than rewriting
   them. The bundled smart-indent path has been exercised with UTF-8 comments.
@@ -296,12 +327,13 @@ Phases 2 and 3 remain open:
   Indic/Arabic shaping, emoji ligatures and bidirectional Hebrew need phase 3.
 - Motif owns preedit display. UTF-8 committed input and overflow handling are
   covered, but external IME-specific preedit presentations require the broader
-  input-method work in phase 3. Printing, calltips and other Motif dialogs retain
-  their old font paths.
+  input-method work in phase 3. Printing, calltips and Motif dialogs other than
+  the search fields retain their old font paths.
 - Undo/redo preserves complete byte sequences. Undo grouping still classifies
   single-character operations by byte count, so multibyte typing may create
   smaller undo groups than ASCII typing. Unicode-aware grouping is follow-on
   behavior, not an offset change.
 
-The next implementation phase is clipboard, search, highlighting and Unicode
-macro APIs. No installed editor or running server is replaced by these changes.
+The remaining Phase 2 work covers clipboard interoperability, Unicode search,
+highlighting and macro APIs. No installed editor or running server is replaced
+by these changes.

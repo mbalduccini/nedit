@@ -22,6 +22,8 @@ build-sanitize.log
 tests/*-test.log
 tests/utf8-widget.ppm
 tests/utf8-widget.png
+tests/utf8-search.ppm
+tests/utf8-search.png
 .utf8-xft-*
 
 tests/test_utf8_sanitize

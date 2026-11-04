@@ -42,10 +42,8 @@
 #include "file.h"
 #include "highlight.h"
 #include "selection.h"
-#ifdef REPLACE_SCOPE
 #include "textDisp.h"
 #include "textP.h"
-#endif
 #include "../util/DialogF.h"
 #include "../util/misc.h"
 #include "../util/nedit_malloc.h"
@@ -587,6 +585,82 @@ static void getSelectionCB(Widget w, XtPointer si, Atom *selection,
     selectionInfo->selection[*length] = 0;
     NEditFree(value);
     selectionInfo->done = 1;
+}
+
+/* Motif's search fields have their own renderer, separate from the document.
+   OpenMotif with Xft can decode/draw their locale text with a Fontconfig font. */
+#if defined(HAVE_XFT) && defined(USE_XFT) && USE_XFT
+typedef struct {
+    XmRenderTable legacy;
+    char *name;
+} searchFieldFont;
+
+static void freeSearchFieldFont(Widget w, XtPointer arg, XtPointer data)
+{
+    searchFieldFont *font = (searchFieldFont *)arg;
+    (void)w;
+    (void)data;
+    XmRenderTableFree(font->legacy);
+    NEditFree(font->name);
+    NEditFree(font);
+}
+#endif
+
+static void setSearchFieldFont(WindowInfo *window, Widget field)
+{
+#if defined(HAVE_XFT) && defined(USE_XFT) && USE_XFT
+    Arg args[3];
+    XmRendition rendition;
+    XmRenderTable table;
+    searchFieldFont *font;
+    const char *name;
+    if (!field) return;
+    XtVaGetValues(field, XmNuserData, &font, NULL);
+    if (!font) {
+        if (window->buffer->encoding != BUF_ENCODING_UTF8) return;
+        XtVaGetValues(field, XmNrenderTable, &table, NULL);
+        font = NEditNew(searchFieldFont);
+        font->legacy = XmRenderTableCopy(table, NULL, 0);
+        font->name = NULL;
+        XtVaSetValues(field, XmNuserData, font, NULL);
+        XtAddCallback(field, XmNdestroyCallback, freeSearchFieldFont, font);
+    }
+    if (window->buffer->encoding != BUF_ENCODING_UTF8) {
+        if (font->name) {
+            XtVaSetValues(field, XmNrenderTable, font->legacy, NULL);
+            NEditFree(font->name); font->name = NULL;
+        }
+        return;
+    }
+    name = ((TextWidget)window->textArea)->text.textD->utf8FontName;
+    if (font->name && !strcmp(font->name, name)) return;
+    XtSetArg(args[0], XmNfontType, XmFONT_IS_XFT);
+    XtSetArg(args[1], XmNfontName, name);
+    XtSetArg(args[2], XmNloadModel, XmLOAD_IMMEDIATE);
+    rendition = XmRenditionCreate(field, XmFONTLIST_DEFAULT_TAG, args, 3);
+    if (!rendition) return;
+    table = XmRenderTableAddRenditions(NULL, &rendition, 1, XmMERGE_REPLACE);
+    if (table) {
+        XtVaSetValues(field, XmNrenderTable, table, NULL);
+        XmRenderTableFree(table);
+        NEditFree(font->name); font->name = NEditStrdup(name);
+    }
+    XmRenditionFree(rendition);
+#else
+    (void)window;
+    (void)field;
+#endif
+}
+
+void RefreshSearchDialogFonts(WindowInfo *window)
+{
+    /* These fields are shared by the tabs in one shell. Background document
+       changes must not replace the active document's search font. */
+    if (!IsTopDocument(window)) return;
+    setSearchFieldFont(window, window->findText);
+    setSearchFieldFont(window, window->replaceText);
+    setSearchFieldFont(window, window->replaceWithText);
+    setSearchFieldFont(window, window->iSearchText);
 }
 
 void DoFindDlog(WindowInfo *window, int direction, int keepDialogs,
@@ -1174,6 +1248,7 @@ void CreateReplaceDlog(Widget parent, WindowInfo *window)
     window->replaceAndFindBtn = replaceFindBtn;
     window->replaceFindBtn = findBtn;
     window->replaceSearchTypeBox = searchTypeBox;
+    RefreshSearchDialogFonts(window);
 #ifdef REPLACE_SCOPE
     window->replaceAllBtn = replaceAllBtn;
     window->replaceScopeWinToggle = inWinBtn;
@@ -1396,6 +1471,7 @@ void CreateFindDlog(Widget parent, WindowInfo *window)
     window->findBtns = btnForm;
     window->findBtn = findBtn;
     window->findSearchTypeBox = searchTypeBox;
+    RefreshSearchDialogFonts(window);
 }
 
 void CreateReplaceMultiFileDlog(WindowInfo *window) 
@@ -2899,6 +2975,7 @@ static void selectedSearchCB(Widget w, XtPointer callData, Atom *selection,
 */
 void BeginISearch(WindowInfo *window, int direction)
 {
+    RefreshSearchDialogFonts(window);
     window->iSearchStartPos = -1;
     XmTextSetString(window->iSearchText, "");
     XmToggleButtonSetState(window->iSearchRevToggle,
@@ -3122,7 +3199,8 @@ static void iSearchTextClearAndPasteAP(Widget w, XEvent *event, String *args,
     selText = GetAnySelection(window);
     iSearchTextSetString(w, window, selText);
     if (selText) {
-        XmTextSetInsertionPosition(window->iSearchText, strlen(selText));
+        XmTextSetInsertionPosition(window->iSearchText,
+                XmTextGetLastPosition(window->iSearchText));
         NEditFree(selText);
     }
     iSearchTextActivateCB(w, window, &cbdata);

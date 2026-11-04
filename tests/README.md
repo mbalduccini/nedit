@@ -31,11 +31,20 @@ It checks document encoding toggles, saved default resources, split-pane font
 inheritance, drag completion with undo/redo, and the Fontconfig chooser's
 Apply, OK and Cancel buttons.
 
+It also exercises real clipboard and PRIMARY paste into Find with accented
+Latin, Greek, CJK, supplementary scalars and combining sequences, verifying
+original bytes and Motif character counts. Real Find button callbacks check
+literal and literal-text regex matches; Replace and incremental search verify
+their resulting edits/selections. Motif-to-editor clipboard paste, encoding/font
+restoration and shared-field tab switching are covered. These checks do not
+imply Unicode regex operators or Unicode case folding.
+
 The full editor check opens a temporary file, edits its supplementary scalar
 through real actions, saves, reopens, and verifies unchanged UTF-8, malformed
 bytes, and embedded NULs. It disables `appendLF` for exact byte comparison.
 
-`tests/utf8-widget.ppm` is an ignored screenshot artifact for visual inspection.
+`tests/utf8-widget.ppm` and `tests/utf8-search.ppm` are ignored screenshot
+artifacts for visual inspection.
 All tests pass without requiring an image converter. See `doc/UTF8-PLAN.md` for
 supported operations and the still-pending Unicode features.
 

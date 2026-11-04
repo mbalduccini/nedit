@@ -43,7 +43,7 @@ preferences.o: preferences.c preferences.h nedit.h textBuf.h text.h \
 rangeset.o: rangeset.c textBuf.h textDisp.h rangeset.h
 regexConvert.o: regexConvert.c regexConvert.h
 regularExp.o: regularExp.c regularExp.h
-search.o: search.c search.h nedit.h textBuf.h regularExp.h text.h \
+search.o: search.c search.h nedit.h textBuf.h regularExp.h text.h textP.h textDisp.h \
   server.h window.h preferences.h file.h highlight.h ../util/DialogF.h \
   ../util/misc.h
 selection.o: selection.c selection.h nedit.h textBuf.h text.h file.h \

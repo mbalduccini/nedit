@@ -43,6 +43,7 @@ def check_application_controls(env):
         subprocess.run([str(tests_dir / "test_utf8_application"), "-svrname", "", "-utf8"],
                        cwd=temp, env=dict(env, NEDIT_HOME=str(prefs)),
                        check=True, timeout=30)
+        (tests_dir / "utf8-search.ppm").write_bytes((Path(temp) / "utf8-search.ppm").read_bytes())
         data = (prefs / "nedit.rc").read_text()
         assert "nedit.utf8: True" in data and "monospace:size=16" in data
 
