@@ -746,6 +746,9 @@ WindowInfo *CreateWindow(const char *name, char *geometry, int iconic)
        modify callback can be called to synchronize the style buffer BEFORE
        the text display's callback is called upon to display a modification */
     window->buffer = BufCreate();
+#ifdef HAVE_XFT
+    if (GetPrefUtf8()) BufSetEncoding(window->buffer, BUF_ENCODING_UTF8);
+#endif
     BufAddModifyCB(window->buffer, SyntaxHighlightModifyCB, window);
     
     /* Attach the buffer to the text widget, and add callbacks for modify */
@@ -2244,6 +2247,7 @@ static Widget createTextArea(Widget parent, WindowInfo *window, int rows,
             textNrows, rows, textNcolumns, cols,
             textNlineNumCols, lineNumCols,
             textNemulateTabs, emTabDist,
+            textNutf8Font, GetPrefUtf8Font(),
             textNfont, GetDefaultFontStruct(TheDisplay, window->fontList),
             textNhScrollBar, hScrollBar, textNvScrollBar, vScrollBar,
             textNreadOnly, IS_ANY_LOCKED(window->lockReasons),
@@ -3429,6 +3433,9 @@ WindowInfo* CreateDocument(WindowInfo* shellWindow, const char* name)
        modify callback can be called to synchronize the style buffer BEFORE
        the text display's callback is called upon to display a modification */
     window->buffer = BufCreate();
+#ifdef HAVE_XFT
+    if (GetPrefUtf8()) BufSetEncoding(window->buffer, BUF_ENCODING_UTF8);
+#endif
     BufAddModifyCB(window->buffer, SyntaxHighlightModifyCB, window);
     
     /* Attach the buffer to the text widget, and add callbacks for modify */

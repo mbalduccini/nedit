@@ -283,6 +283,8 @@ static struct prefData {
 #ifdef SGI_CUSTOM
     int shortMenus; 	    	/* short menu mode */
 #endif
+    int utf8;
+    char utf8Font[MAX_FONT_LEN];
     char fontString[MAX_FONT_LEN]; /* names of fonts for text widget */
     char boldFontString[MAX_FONT_LEN];
     char italicFontString[MAX_FONT_LEN];
@@ -933,6 +935,9 @@ static PrefDescripRec PrefDescrip[] = {
     	&PrefData.emTabDist, NULL, True},
     {"insertTabs", "InsertTabs", PREF_BOOLEAN, "True",
     	&PrefData.insertTabs, NULL, True},
+    {"utf8", "Utf8", PREF_BOOLEAN, "False", &PrefData.utf8, NULL, True},
+    {"utf8Font", "Utf8Font", PREF_STRING, "monospace:size=12",
+        PrefData.utf8Font, (void *)sizeof(PrefData.utf8Font), True},
     {"textFont", "TextFont", PREF_STRING,
     	"-*-courier-medium-r-normal--14-*-*-*-*-iso8859-1",
     	PrefData.fontString, (void *)sizeof(PrefData.fontString), True},
@@ -1088,6 +1093,9 @@ static XrmOptionDescRec OpTable[] = {
     {"-rows", ".textRows", XrmoptionSepArg, (caddr_t)NULL},
     {"-columns", ".textCols", XrmoptionSepArg, (caddr_t)NULL},
     {"-tabs", ".tabDistance", XrmoptionSepArg, (caddr_t)NULL},
+    {"-utf8", ".utf8", XrmoptionNoArg, (caddr_t)"True"},
+    {"-8bit", ".utf8", XrmoptionNoArg, (caddr_t)"False"},
+    {"-utf8font", ".utf8Font", XrmoptionSepArg, (caddr_t)NULL},
     {"-font", ".textFont", XrmoptionSepArg, (caddr_t)NULL},
     {"-fn", ".textFont", XrmoptionSepArg, (caddr_t)NULL},
     {"-svrname", ".serverName", XrmoptionSepArg, (caddr_t)NULL},
@@ -2039,6 +2047,9 @@ void SetPrefBoldItalicFont(char *fontName)
     setStringPref(PrefData.boldItalicFontString, fontName);
     PrefData.boldItalicFontStruct = XLoadQueryFont(TheDisplay, fontName);
 }
+
+int GetPrefUtf8(void) { return PrefData.utf8; }
+char *GetPrefUtf8Font(void) { return PrefData.utf8Font; }
 
 char *GetPrefFontName(void)
 {

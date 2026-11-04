@@ -392,6 +392,7 @@ static const char cmdLineHelp[] =
 	      [-tags file] [-tabs n] [-wrap] [-nowrap] [-autowrap]\n\
 	      [-autoindent] [-noautoindent] [-autosave] [-noautosave]\n\
 	      [-lm languagemode] [-rows n] [-columns n] [-font font]\n\
+              [-utf8 | -8bit] [-utf8font fontconfig-name]\n\
 	      [-geometry geometry] [-iconic] [-noiconic] [-svrname name]\n\
 	      [-display [host]:server[.screen] [-xrm resourcestring]\n\
 	      [-import file] [-background color] [-foreground color]\n\

@@ -35,6 +35,7 @@
 
 /* Resource strings */
 #define textNfont "font"
+#define textNutf8Font "utf8Font"
 #define textCFont "Font"
 #define textNrows "rows"
 #define textCRows "Rows"

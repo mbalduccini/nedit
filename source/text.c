@@ -224,6 +224,7 @@ static int pendingSelection(Widget w);
 static int deletePendingSelection(Widget w, XEvent *event);
 static int deleteEmulatedTab(Widget w, XEvent *event);
 static void selectWord(Widget w, int pointerX);
+static int wordDelimiter(textBuffer *buf, int pos, const char *delimiters);
 static int spanForward(textBuffer *buf, int startPos, char *searchChars,
 	int ignoreSpace, int *foundPos);
 static int spanBackward(textBuffer *buf, int startPos, char *searchChars, int
@@ -617,6 +618,8 @@ static XtResource resources[] = {
       XmRInt, 0},
     {XmNshadowThickness, XmCShadowThickness, XmRDimension, sizeof(Dimension),
       XtOffset(TextWidget, primitive.shadow_thickness), XmRInt, 0},
+    {textNutf8Font, "Utf8Font", XmRString, sizeof(String),
+      XtOffset(TextWidget, text.utf8FontName), XmRString, "monospace:size=12"},
     {textNfont, textCFont, XmRFontStruct, sizeof(XFontStruct *),
       XtOffset(TextWidget, text.fontStruct), XmRString, "fixed"},
     {textNselectForeground, textCSelectForeground, XmRPixel, sizeof(Pixel),
@@ -831,6 +834,9 @@ static void initialize(TextWidget request, TextWidget new)
           new->text.backlightCharTypes, new->text.calltipFGPixel,
           new->text.calltipBGPixel);
 
+    TextDSetUtf8Font(new->text.textD, new->text.utf8FontName);
+    new->text.utf8FontName = new->text.textD->utf8FontName;
+
     /* Add mandatory delimiters blank, tab, and newline to the list of
        delimiters.  The memory use scheme here is that new values are
        always copied, and can therefore be safely freed on subsequent
@@ -977,7 +983,8 @@ static void resize(TextWidget w)
 
     w->text.columns = (width - marginWidth*2 - lineNumAreaWidth) /
     	    fs->max_bounds.width;
-    w->text.rows = (height - marginHeight*2) / (fs->ascent + fs->descent);
+    w->text.rows = (height - marginHeight*2) /
+            (w->text.textD->ascent + w->text.textD->descent);
     
     /* Reject widths and heights less than a character, which the text
        display can't tolerate.  This is not strictly legal, but I've seen
@@ -993,7 +1000,8 @@ static void resize(TextWidget w)
     }
     if (w->text.rows < 1) {
     	w->text.rows = 1;
-    	w->core.height = height = fs->ascent + fs->descent + marginHeight*2;
+        w->core.height = height = w->text.textD->ascent +
+                w->text.textD->descent + marginHeight*2;
     }
     
     /* Resize the text display that the widget uses to render text */
@@ -1116,6 +1124,11 @@ static Boolean setValues(TextWidget current, TextWidget request,
     	    TextDSetCursorStyle(current->text.textD, BLOCK_CURSOR);
     }
     
+    if (new->text.utf8FontName != current->text.utf8FontName) {
+        TextDSetUtf8Font(current->text.textD, new->text.utf8FontName);
+        new->text.utf8FontName = current->text.textD->utf8FontName;
+    }
+
     if (new->text.fontStruct != current->text.fontStruct) {
 	if (new->text.lineNumCols != 0)
 	    reconfigure = True;
@@ -1198,7 +1211,7 @@ static XtGeometryResult queryGeometry(Widget w, XtWidgetGeometry *proposed,
     int curWidth = tw->core.width;
     XFontStruct *fs = tw->text.textD->fontStruct;
     int fontWidth = fs->max_bounds.width;
-    int fontHeight = fs->ascent + fs->descent;
+    int fontHeight = tw->text.textD->ascent + tw->text.textD->descent;
     int marginHeight = tw->text.marginHeight;
     int propWidth = (proposed->request_mode & CWWidth) ? proposed->width : 0;
     int propHeight = (proposed->request_mode & CWHeight) ? proposed->height : 0;
@@ -1429,8 +1442,9 @@ void TextInsertAtCursor(Widget w, char *chars, XEvent *event,
     TextWidget tw = (TextWidget)w;
     textDisp *textD = tw->text.textD;
     textBuffer *buf = textD->buffer;
-    int fontWidth = textD->fontStruct->max_bounds.width;
+    int fontWidth = TextDMaxFontWidth(textD, False);
     int replaceSel, singleLine, breakAt = 0;
+    int charsLength;
 
     /* Don't wrap if auto-wrap is off or suppressed, or it's just a newline */
     if (!allowWrap || !tw->text.autoWrap ||
@@ -1454,8 +1468,15 @@ void TextInsertAtCursor(Widget w, char *chars, XEvent *event,
             textD->width / fontWidth;
     lineStartPos = BufStartOfLine(buf, cursorPos);
     colNum = BufCountDispChars(buf, lineStartPos, cursorPos);
-    for (c=chars; *c!='\0' && *c!='\n'; c++)
-        colNum += BufCharWidth(*c, colNum, buf->tabDist, buf->nullSubsChar);
+    charsLength = strlen(chars);
+    for (c=chars; *c!='\0' && *c!='\n'; ) {
+        int consumed = 1;
+        if (buf->encoding == BUF_ENCODING_UTF8)
+            consumed = Utf8Decode(c, chars + charsLength - c, NULL, NULL);
+        colNum += consumed == 1 ?
+                BufCharWidth(*c, colNum, buf->tabDist, buf->nullSubsChar) : 1;
+        c += consumed;
+    }
     singleLine = *c == '\0';
     if (colNum < wrapMargin && singleLine) {
     	simpleInsertAtCursor(w, chars, event, True);
@@ -2236,32 +2257,39 @@ static void selfInsertAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
     int status;
 #endif
     XKeyEvent *e = &event->xkey;
-    char chars[20];
+    char stackChars[20], *chars = stackChars;
+    int capacity = sizeof(stackChars) - 1;
     KeySym keysym;
     int nChars;
     smartIndentCBStruct smartIndent;
     textDisp *textD = ((TextWidget)w)->text.textD;
     
 #ifdef NO_XMIM
-    nChars = XLookupString(&event->xkey, chars, 19, &keysym, &compose);
+    nChars = XLookupString(&event->xkey, chars, capacity, &keysym, &compose);
     if (nChars == 0)
-    	return;
+        goto done;
 #else
-    nChars = XmImMbLookupString(w, &event->xkey, chars, 19, &keysym,
+    nChars = XmImMbLookupString(w, &event->xkey, chars, capacity, &keysym,
      	   &status);
+    if (status == XBufferOverflow && nChars > capacity) {
+        capacity = nChars;
+        chars = (char *)NEditMalloc((size_t)capacity + 1);
+        nChars = XmImMbLookupString(w, &event->xkey, chars, capacity,
+                &keysym, &status);
+    }
     if (nChars == 0 || status == XLookupNone ||
      	   status == XLookupKeySym || status == XBufferOverflow)
-    	return;
+        goto done;
 #endif
     cancelDrag(w);
     if (checkReadOnly(w))
-	return;
+	goto done;
     TakeMotifDestination(w, e->time);
     chars[nChars] = '\0';
     
     if (!BufSubstituteNullChars(chars, nChars, window->buffer)) {
         DialogF(DF_ERR, window->shell, 1, "Error", "Too much binary data", "OK");
-        return;
+        goto done;
     }
 
     /* If smart indent is on, call the smart indent callback to check the
@@ -2275,6 +2303,8 @@ static void selfInsertAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
     }
     TextInsertAtCursor(w, chars, event, True, True);
     BufUnselect(textD->buffer);
+done:
+    if (chars != stackChars) NEditFree(chars);
 }
 
 static void newlineAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
@@ -2419,7 +2449,7 @@ static void deletePreviousCharacterAP(Widget w, XEvent *event, String *args,
 {
     XKeyEvent *e = &event->xkey;
     textDisp *textD = ((TextWidget)w)->text.textD;
-    int insertPos = TextDGetInsertPosition(textD);
+    int insertPos = TextDGetInsertPosition(textD), prevPos;
     char c;
     int silent = hasKey("nobell", args, nArgs);
     
@@ -2439,17 +2469,18 @@ static void deletePreviousCharacterAP(Widget w, XEvent *event, String *args,
     if (deleteEmulatedTab(w, event))
     	return;
 
+    prevPos = BufPrevCharacter(textD->buffer, insertPos);
     if (((TextWidget)w)->text.overstrike) {
-    	c = BufGetCharacter(textD->buffer, insertPos - 1);
+        c = BufGetCharacter(textD->buffer, prevPos);
     	if (c == '\n')
-    	    BufRemove(textD->buffer, insertPos - 1, insertPos);
+            BufRemove(textD->buffer, prevPos, insertPos);
     	else if (c != '\t')
-    	    BufReplace(textD->buffer, insertPos - 1, insertPos, " ");
+            BufReplace(textD->buffer, prevPos, insertPos, " ");
     } else {
-    	BufRemove(textD->buffer, insertPos - 1, insertPos);
+        BufRemove(textD->buffer, prevPos, insertPos);
     }
 
-    TextDSetInsertPosition(textD, insertPos - 1);
+    TextDSetInsertPosition(textD, prevPos);
     checkAutoShowInsertPos(w);
     callCursorMovementCBs(w, event);
 }
@@ -2472,7 +2503,8 @@ static void deleteNextCharacterAP(Widget w, XEvent *event, String *args,
         ringIfNecessary(silent, w);
     	return;
     }
-    BufRemove(textD->buffer, insertPos , insertPos + 1);
+    BufRemove(textD->buffer, insertPos,
+            BufNextCharacter(textD->buffer, insertPos));
     checkAutoShowInsertPos(w);
     callCursorMovementCBs(w, event);
 }
@@ -2502,10 +2534,10 @@ static void deletePreviousWordAP(Widget w, XEvent *event, String *args,
         return;
     }
 
-    pos = max(insertPos - 1, 0);
-    while (strchr(delimiters, BufGetCharacter(textD->buffer, pos)) != NULL &&
+    pos = BufPrevCharacter(textD->buffer, insertPos);
+    while (wordDelimiter(textD->buffer, pos, delimiters) &&
             pos != lineStart) {
-        pos--;
+        pos = BufPrevCharacter(textD->buffer, pos);
     }
 
     pos = startOfWord((TextWidget)w, pos);
@@ -2540,9 +2572,9 @@ static void deleteNextWordAP(Widget w, XEvent *event, String *args,
     }
 
     pos = insertPos;
-    while (strchr(delimiters, BufGetCharacter(textD->buffer, pos)) != NULL &&
+    while (wordDelimiter(textD->buffer, pos, delimiters) &&
             pos != lineEnd) {
-        pos++;
+        pos = BufNextCharacter(textD->buffer, pos);
     }
 
     pos = endOfWord((TextWidget)w, pos);
@@ -2656,20 +2688,20 @@ static void forwardWordAP(Widget w, XEvent *event, String *args,
     pos = insertPos;
 
     if (hasKey("tail", args, nArgs)) {
-        for (; pos<buf->length; pos++) {
-            if (NULL == strchr(delimiters, BufGetCharacter(buf, pos))) {
+        for (; pos<buf->length; pos = BufNextCharacter(buf, pos)) {
+            if (!wordDelimiter(buf, pos, delimiters)) {
                 break;
             }
         }
-        if (NULL == strchr(delimiters, BufGetCharacter(buf, pos))) {
+        if (!wordDelimiter(buf, pos, delimiters)) {
             pos = endOfWord((TextWidget)w, pos);
         }
     } else {
-        if (NULL == strchr(delimiters, BufGetCharacter(buf, pos))) {
+        if (!wordDelimiter(buf, pos, delimiters)) {
             pos = endOfWord((TextWidget)w, pos);
         }
-        for (; pos<buf->length; pos++) {
-            if (NULL == strchr(delimiters, BufGetCharacter(buf, pos))) {
+        for (; pos<buf->length; pos = BufNextCharacter(buf, pos)) {
+            if (!wordDelimiter(buf, pos, delimiters)) {
                 break;
             }
         }
@@ -2695,9 +2727,9 @@ static void backwardWordAP(Widget w, XEvent *event, String *args,
         ringIfNecessary(silent, w);
     	return;
     }
-    pos = max(insertPos - 1, 0);
-    while (strchr(delimiters, BufGetCharacter(buf, pos)) != NULL && pos > 0)
-    	pos--;
+    pos = BufPrevCharacter(textD->buffer, insertPos);
+    while (wordDelimiter(buf, pos, delimiters) && pos > 0)
+        pos = BufPrevCharacter(buf, pos);
     pos = startOfWord((TextWidget)w, pos);
     	
     TextDSetInsertPosition(textD, pos);
@@ -3118,7 +3150,7 @@ static void pageLeftAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
     textDisp *textD = ((TextWidget)w)->text.textD;
     textBuffer *buf = textD->buffer;
     int insertPos = TextDGetInsertPosition(textD);
-    int maxCharWidth = textD->fontStruct->max_bounds.width;
+    int maxCharWidth = TextDMaxFontWidth(textD, False);
     int lineStartPos, indent, pos;
     int horizOffset;
     int silent = hasKey("nobell", args, nArgs);
@@ -3155,7 +3187,7 @@ static void pageRightAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
     textDisp *textD = ((TextWidget)w)->text.textD;
     textBuffer *buf = textD->buffer;
     int insertPos = TextDGetInsertPosition(textD);
-    int maxCharWidth = textD->fontStruct->max_bounds.width;
+    int maxCharWidth = TextDMaxFontWidth(textD, False);
     int oldHorizOffset = textD->horizOffset;
     int lineStartPos, indent, pos;
     int horizOffset, sliderSize, sliderMax;
@@ -3637,8 +3669,33 @@ static void selectWord(Widget w, int pointerX)
     
     TextPosToXY(w, insertPos, &x, &y);
     if (pointerX < x && insertPos > 0 && BufGetCharacter(buf, insertPos-1) != '\n')
-	insertPos--;
+        insertPos = BufPrevCharacter(buf, insertPos);
     BufSelect(buf, startOfWord(tw, insertPos), endOfWord(tw, insertPos));
+}
+
+/* Preserve NEdit's configured delimiter model, comparing whole scalars in
+   UTF-8 mode. Unicode word-break properties remain a separate later phase. */
+static int wordDelimiter(textBuffer *buf, int pos, const char *delimiters)
+{
+    unsigned long scalar, delimiter;
+    int length = strlen(delimiters), p, consumed;
+    if (buf->encoding != BUF_ENCODING_UTF8)
+        return strchr(delimiters, BufGetCharacter(buf, pos)) != NULL;
+    if (pos >= buf->length) return True;
+    BufGetCodepoint(buf, pos, &scalar, NULL);
+    for (p = 0; p < length; p += consumed) {
+        consumed = Utf8Decode(delimiters + p, length - p, &delimiter, NULL);
+        if (scalar == delimiter) return True;
+    }
+    return False;
+}
+
+static int utf8WordClass(TextWidget w, int pos)
+{
+    textBuffer *buf = w->text.textD->buffer;
+    char c = BufGetCharacter(buf, pos);
+    if (c == ' ' || c == '\t') return 0;
+    return wordDelimiter(buf, pos, w->text.delimiters) ? 1 : 2;
 }
 
 static int startOfWord(TextWidget w, int pos)
@@ -3647,7 +3704,18 @@ static int startOfWord(TextWidget w, int pos)
     textBuffer *buf = w->text.textD->buffer;
     char *delimiters=w->text.delimiters;
     char c = BufGetCharacter(buf, pos);
-                
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        int previous, wordClass;
+        pos = BufStartOfCharacter(buf, pos);
+        wordClass = utf8WordClass(w, pos);
+        while (pos > 0) {
+            previous = BufPrevCharacter(buf, pos);
+            if (utf8WordClass(w, previous) != wordClass) break;
+            pos = previous;
+        }
+        return pos;
+    }
+
     if (c == ' ' || c== '\t') {
         if (!spanBackward(buf, pos, " \t", False, &startPos))
 	    return 0;
@@ -3669,6 +3737,14 @@ static int endOfWord(TextWidget w, int pos)
     char *delimiters=w->text.delimiters;
     char c = BufGetCharacter(buf, pos);
     
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        int wordClass;
+        pos = BufStartOfCharacter(buf, pos);
+        wordClass = utf8WordClass(w, pos);
+        while (pos < buf->length && utf8WordClass(w, pos) == wordClass)
+            pos = BufNextCharacter(buf, pos);
+        return pos;
+    }
     if (c == ' ' || c== '\t') { 
         if (!spanForward(buf, pos, " \t", False, &endPos))
 	    return buf->length;
@@ -3912,12 +3988,15 @@ static char *wrapText(TextWidget tw, char *startLine, char *text, int bufOffset,
 {
     textBuffer *wrapBuf, *buf = tw->text.textD->buffer;
     int startLineLen = strlen(startLine);
-    int colNum, pos, lineStartPos, limitPos, breakAt, charsAdded;
-    int firstBreak = -1, tabDist = buf->tabDist;
+    int colNum, pos, next, lineStartPos, limitPos, breakAt, charsAdded;
+    int firstBreak = -1;
     char c, *wrappedText;
     
     /* Create a temporary text buffer and load it with the strings */
     wrapBuf = BufCreate();
+    BufSetEncoding(wrapBuf, buf->encoding);
+    wrapBuf->tabDist = buf->tabDist;
+    wrapBuf->nullSubsChar = buf->nullSubsChar;
     BufInsert(wrapBuf, 0, startLine);
     BufInsert(wrapBuf, wrapBuf->length, text);
     
@@ -3930,12 +4009,13 @@ static char *wrapText(TextWidget tw, char *startLine, char *text, int bufOffset,
     lineStartPos = 0;
     limitPos = breakBefore == NULL ? startLineLen : 0;
     while (pos < wrapBuf->length) {
+        next = BufNextCharacter(wrapBuf, pos);
     	c = BufGetCharacter(wrapBuf, pos);
     	if (c == '\n') {
     	    lineStartPos = limitPos = pos + 1;
     	    colNum = 0;
     	} else {
-    	    colNum += BufCharWidth(c, colNum, tabDist, buf->nullSubsChar);
+            colNum += BufCodepointWidth(wrapBuf, pos, colNum);
     	    if (colNum > wrapMargin) {
     		if (!wrapLine(tw, wrapBuf, bufOffset, lineStartPos, pos,
     		    	limitPos, &breakAt, &charsAdded)) {
@@ -3943,13 +4023,14 @@ static char *wrapText(TextWidget tw, char *startLine, char *text, int bufOffset,
     		} else {
     	    	    lineStartPos = limitPos = breakAt+1;
     	    	    pos += charsAdded;
-    	    	    colNum = BufCountDispChars(wrapBuf, lineStartPos, pos+1);
+                    next += charsAdded;
+                    colNum = BufCountDispChars(wrapBuf, lineStartPos, next);
     	    	    if (firstBreak == -1)
     	    		firstBreak = breakAt;
     		}
     	    }
     	}
-    	pos++;
+        pos = next;
     }
     
     /* Return the wrapped text, possibly including part of startLine */
@@ -4099,8 +4180,8 @@ static void autoScrollTimerProc(XtPointer clientData, XtIntervalId *id)
     TextWidget w = (TextWidget)clientData;
     textDisp *textD = w->text.textD;
     int topLineNum, horizOffset, newPos, cursorX, y;
-    int fontWidth = textD->fontStruct->max_bounds.width;
-    int fontHeight = textD->fontStruct->ascent + textD->fontStruct->descent;
+    int fontWidth = TextDMaxFontWidth(textD, False);
+    int fontHeight = textD->ascent + textD->descent;
 
     /* For vertical autoscrolling just dragging the mouse outside of the top
        or bottom of the window is sufficient, for horizontal (non-rectangular)

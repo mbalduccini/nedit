@@ -28,6 +28,7 @@
 #define NEDIT_TEXTDISP_H_INCLUDED
 
 #include "textBuf.h"
+#include "utf8Font.h"
 
 #include <X11/Intrinsic.h>
 #include <X11/Xlib.h>
@@ -90,6 +91,7 @@ typedef struct _textDisp {
     					   the number of redraw calls */
     int cursorStyle;			/* One of enum cursorStyles above */
     int cursorPreferredCol;		/* Column for vert. cursor movement */
+    int cursorPreferredX;                /* UTF-8 vertical movement in pixels */
     int nVisibleLines;			/* # of visible (displayed) lines */
     int nBufferLines;			/* # of newlines in the buffer */
     textBuffer *buffer;     	    	/* Contains text to be displayed */
@@ -123,6 +125,8 @@ typedef struct _textDisp {
     	    unfinishedHighlightCB;  	/*     regions */
     void *highlightCBArg;   	    	/* Arg to unfinishedHighlightCB */
     XFontStruct *fontStruct;		/* Font structure for primary font */
+    utf8Font *utf8Font;
+    char *utf8FontName;
     int ascent, descent;		/* Composite ascent and descent for
     					   primary font + all-highlight fonts */
     int fixedFontWidth;			/* Font width if all current fonts are
@@ -179,6 +183,7 @@ void TextDSetColors(textDisp *textD, Pixel textFgP, Pixel textBgP,
         Pixel selectFgP, Pixel selectBgP, Pixel hiliteFgP, Pixel hiliteBgP, 
         Pixel lineNoFgP, Pixel cursorFgP);
 void TextDSetFont(textDisp *textD, XFontStruct *fontStruct);
+void TextDSetUtf8Font(textDisp *textD, const char *name);
 int TextDMinFontWidth(textDisp *textD, Boolean considerStyles);
 int TextDMaxFontWidth(textDisp *textD, Boolean considerStyles);
 void TextDResize(textDisp *textD, int width, int height);

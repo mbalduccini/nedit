@@ -31,6 +31,7 @@
 #endif
 
 #include "textBuf.h"
+#include "utf8.h"
 #include "rangeset.h"
 #include "../util/nedit_malloc.h"
 
@@ -145,6 +146,7 @@ textBuffer *BufCreatePreallocated(int requestedSize)
     
     buf = (textBuffer *)NEditMalloc(sizeof(textBuffer));
     buf->length = 0;
+    buf->encoding = BUF_ENCODING_8BIT;
     buf->buf = (char*) NEditMalloc(requestedSize + PREFERRED_GAP_SIZE + 1);
     buf->buf[requestedSize + PREFERRED_GAP_SIZE] = '\0';
     buf->gapStart = 0;
@@ -329,6 +331,95 @@ char BufGetCharacter(const textBuffer* buf, int pos)
         return buf->buf[pos];
     else
     	return buf->buf[pos + buf->gapEnd-buf->gapStart];
+}
+
+/* Set before attaching a display. A future document encoding action must
+   also invalidate the display's line starts and font/layout caches. */
+void BufSetEncoding(textBuffer *buf, enum bufEncoding encoding)
+{
+    buf->encoding = encoding;
+}
+
+/* Decode without requiring contiguous storage (the gap may split a scalar). */
+int BufGetCodepoint(const textBuffer *buf, int pos, unsigned long *scalar,
+        int *valid)
+{
+    char bytes[4];
+    int i, available;
+    unsigned char first;
+
+    if (pos < 0 || pos >= buf->length) {
+        if (scalar != NULL) *scalar = 0;
+        if (valid != NULL) *valid = 0;
+        return 0;
+    }
+    first = (unsigned char)BufGetCharacter(buf, pos);
+    if (buf->encoding != BUF_ENCODING_UTF8 || first < 0x80) {
+        if (scalar != NULL) *scalar = first;
+        if (valid != NULL) *valid = 1;
+        return 1;
+    }
+    available = min(4, buf->length - pos);
+    for (i = 0; i < available; i++) bytes[i] = BufGetCharacter(buf, pos + i);
+    return Utf8Decode(bytes, available, scalar, valid);
+}
+
+/* Only a valid sequence can make an offset an interior position. Invalid
+   bytes are individual editable units; do not skip runs of continuation bytes. */
+int BufStartOfCharacter(const textBuffer *buf, int pos)
+{
+    int start, length, valid;
+
+    pos = max(0, min(pos, buf->length));
+    if (buf->encoding != BUF_ENCODING_UTF8 || pos == buf->length) return pos;
+    if (((unsigned char)BufGetCharacter(buf, pos) & 0xc0) != 0x80) return pos;
+    for (start = max(0, pos - 3); start < pos; start++) {
+        length = BufGetCodepoint(buf, start, NULL, &valid);
+        if (valid && start + length > pos) return start;
+    }
+    return pos;
+}
+
+int BufEndOfCharacter(const textBuffer *buf, int pos)
+{
+    int start = BufStartOfCharacter(buf, pos);
+    pos = max(0, min(pos, buf->length));
+    return start < pos ? start + BufGetCodepoint(buf, start, NULL, NULL) : pos;
+}
+
+int BufNextCharacter(const textBuffer *buf, int pos)
+{
+    pos = BufStartOfCharacter(buf, pos);
+    return pos + BufGetCodepoint(buf, pos, NULL, NULL);
+}
+
+int BufPrevCharacter(const textBuffer *buf, int pos)
+{
+    int start = BufStartOfCharacter(buf, pos);
+    int length, valid;
+
+    pos = max(0, min(pos, buf->length));
+    if (start < pos) return start;
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        for (start = pos - 1; start >= max(0, pos - 4); start--) {
+            length = BufGetCodepoint(buf, start, NULL, &valid);
+            if (valid && start + length == pos) return start;
+        }
+    }
+    return max(0, pos - 1);
+}
+
+/* Phase 1 scalar columns: non-ASCII scalars occupy one logical column.
+   Wide/zero-width/grapheme semantics will use Unicode properties in layout. */
+int BufCodepointWidth(const textBuffer *buf, int pos, int indent)
+{
+    int length = BufGetCodepoint(buf, pos, NULL, NULL);
+
+    if (length == 0) return 0;
+    if (length == 1)
+        return BufCharWidth(BufGetCharacter(buf, pos), indent,
+                buf->tabDist, buf->nullSubsChar);
+    return 1;
 }
 
 /*
@@ -674,6 +765,11 @@ void BufSelect(textBuffer *buf, int start, int end)
 {
     selection oldSelection = buf->primary;
 
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        int first = min(start, end), last = max(start, end);
+        start = BufStartOfCharacter(buf, first);
+        end = first == last ? start : BufEndOfCharacter(buf, last);
+    }
     setSelection(&buf->primary, start, end);
     redisplaySelection(buf, &oldSelection, &buf->primary);
 }
@@ -730,6 +826,11 @@ void BufSecondarySelect(textBuffer *buf, int start, int end)
 {
     selection oldSelection = buf->secondary;
 
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        int first = min(start, end), last = max(start, end);
+        start = BufStartOfCharacter(buf, first);
+        end = first == last ? start : BufEndOfCharacter(buf, last);
+    }
     setSelection(&buf->secondary, start, end);
     redisplaySelection(buf, &oldSelection, &buf->secondary);
 }
@@ -1111,11 +1212,13 @@ int BufCountDispChars(const textBuffer* buf, int lineStartPos,
         int targetPos)
 {
     int pos, charCount = 0;
-    char expandedChar[MAX_EXP_CHAR_LEN];
-    
-    pos = lineStartPos;
-    while (pos < targetPos && pos < buf->length)
-    	charCount += BufGetExpandedChar(buf, pos++, charCount, expandedChar);
+
+    pos = BufStartOfCharacter(buf, lineStartPos);
+    targetPos = BufStartOfCharacter(buf, targetPos);
+    while (pos < targetPos && pos < buf->length) {
+        charCount += BufCodepointWidth(buf, pos, charCount);
+        pos = BufNextCharacter(buf, pos);
+    }
     return charCount;
 }
 
@@ -1129,13 +1232,13 @@ int BufCountForwardDispChars(textBuffer *buf, int lineStartPos, int nChars)
     int pos, charCount = 0;
     char c;
     
-    pos = lineStartPos;
+    pos = BufStartOfCharacter(buf, lineStartPos);
     while (charCount < nChars && pos < buf->length) {
     	c = BufGetCharacter(buf, pos);
     	if (c == '\n')
     	    return pos;
-    	charCount += BufCharWidth(c, charCount, buf->tabDist,buf->nullSubsChar);
-    	pos++;
+        charCount += BufCodepointWidth(buf, pos, charCount);
+        pos = BufNextCharacter(buf, pos);
     }
     return pos;
 }

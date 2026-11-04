@@ -32,12 +32,14 @@
 
 #include "textDisp.h"
 #include "textBuf.h"
+#include "utf8.h"
 #include "text.h"
 #include "textP.h"
 #include "nedit.h"
 #include "calltips.h"
 #include "highlight.h"
 #include "rangeset.h"
+#include "utf8Layout.h"
 #include "../util/nedit_malloc.h"
 
 #include <stdio.h>
@@ -180,6 +182,117 @@ static Pixel allocBGColor(Widget w, char *colorName, int *ok);
 static Pixel getRangesetColor(textDisp *textD, int ind, Pixel bground);
 static void textDRedisplayRange(textDisp *textD, int start, int end);
 
+static int utf8Active(const textDisp *textD)
+{
+    return textD->utf8Font != NULL && textD->buffer != NULL &&
+            textD->buffer->encoding == BUF_ENCODING_UTF8;
+}
+
+static int utf8VerticalPosition(textDisp *textD, int start, int target,
+        int absolute, int *preferred);
+
+static int utf8Face(const textDisp *textD, int style)
+{
+    int index = (style & STYLE_LOOKUP_MASK) - ASCII_A;
+    if (index < 0 || index >= textD->nStyles) return 0;
+    return (textD->styleTable[index].isBold ? 1 : 0) |
+            (textD->styleTable[index].isItalic ? 2 : 0);
+}
+
+typedef struct { const textDisp *textD; int start; } utf8MeasureContext;
+static int measureUtf8Cell(const char *text, int length, int byteStart, void *arg)
+{
+    utf8MeasureContext *ctx = (utf8MeasureContext *)arg;
+    int style = ctx->textD->styleBuffer ? (unsigned char)
+            BufGetCharacter(ctx->textD->styleBuffer, ctx->start + byteStart) : 0;
+    if (style && style == (unsigned char)ctx->textD->unfinishedStyle &&
+            ctx->textD->unfinishedHighlightCB) {
+        ctx->textD->unfinishedHighlightCB((textDisp *)ctx->textD, ctx->start + byteStart,
+                ctx->textD->highlightCBArg);
+        style = (unsigned char)BufGetCharacter(ctx->textD->styleBuffer,
+                ctx->start + byteStart);
+    }
+    return Utf8FontWidth(ctx->textD->utf8Font, text, length,
+            utf8Face(ctx->textD, style));
+}
+
+static utf8LineLayout *utf8LineMap(const textDisp *textD, int start, int length)
+{
+    utf8MeasureContext ctx;
+    utf8LineLayout *map;
+    char *text = BufGetRange(textD->buffer, start, start + length);
+    ctx.textD = textD; ctx.start = start;
+    map = Utf8LayoutCreate(text, length, textD->buffer->tabDist,
+            textD->buffer->nullSubsChar, measureUtf8Cell, &ctx);
+    NEditFree(text);
+    return map;
+}
+
+static void redisplayUtf8Line(textDisp *textD, int line)
+{
+    int start = textD->lineStarts[line], length, i, x, y, style, offset;
+    int height = textD->ascent + textD->descent;
+    utf8LineLayout *map;
+    utf8LayoutCell *cell;
+    if (!XtIsRealized(textD->w)) return;
+    y = textD->top + line * height;
+    if (start == -1) {
+        drawString(textD, FILL_MASK, textD->left, y,
+                textD->left + textD->width, NULL, 0);
+        return;
+    }
+    length = visLineLength(textD, line);
+    map = utf8LineMap(textD, start, length);
+    if (!map) return;
+    offset = textD->continuousWrap ? BufCountDispChars(textD->buffer,
+            BufStartOfLine(textD->buffer, start), start) : 0;
+    x = textD->left - textD->horizOffset;
+    /* Background first, then glyphs, so overhanging glyphs are not erased by
+       the following character's background. Redraw the whole visible row. */
+    for (i = 0; i < map->nCells; i++) {
+        cell = &map->cells[i];
+        style = styleOfPos(textD, start, length, cell->byteStart,
+                offset + cell->columnStart,
+                BufGetCharacter(textD->buffer, start + cell->byteStart));
+        if (x + cell->xEnd >= textD->left &&
+                x + cell->xStart < textD->left + textD->width)
+            drawString(textD, style, x + cell->xStart, y,
+                    x + cell->xEnd, NULL, 0);
+    }
+    {
+        int fillX = x + map->width, column = offset + map->columns;
+        int space = max(1, Utf8FontWidth(textD->utf8Font, " ", 1, 0));
+        if (fillX < textD->left) {
+            int skip = (textD->left - fillX) / space;
+            fillX += skip * space; column += skip;
+        }
+        while (fillX < textD->left + textD->width) {
+            style = styleOfPos(textD, start, length, length, column++, 0);
+            drawString(textD, style | FILL_MASK, fillX, y,
+                    min(fillX + space, textD->left + textD->width), NULL, 0);
+            fillX += space;
+        }
+    }
+    for (i = 0; i < map->nCells; i++) {
+        cell = &map->cells[i];
+        style = styleOfPos(textD, start, length, cell->byteStart,
+                offset + cell->columnStart,
+                BufGetCharacter(textD->buffer, start + cell->byteStart));
+        if (x + cell->xEnd >= textD->left &&
+                x + cell->xStart < textD->left + textD->width)
+            drawString(textD, style, x + cell->xStart, y, x + cell->xEnd,
+                    cell->renderText, cell->renderLength);
+    }
+    if (textD->cursorOn && textD->cursorPos >= start &&
+            textD->cursorPos <= start + length) {
+        textD->cursorX = x + Utf8LayoutByteToX(map, textD->cursorPos - start);
+        textD->cursorY = y;
+        drawCursor(textD, textD->cursorX, y);
+    }
+    Utf8LayoutFree(map);
+}
+
+
 textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
         Position left, Position top, Position width, Position height,
         Position lineNumLeft, Position lineNumWidth, textBuffer *buffer,
@@ -206,6 +319,7 @@ textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
     textD->cursorToHint = NO_HINT;
     textD->cursorStyle = NORMAL_CURSOR;
     textD->cursorPreferredCol = -1;
+    textD->cursorPreferredX = -1;
     textD->buffer = buffer;
     textD->firstChar = 0;
     textD->lastChar = 0;
@@ -218,6 +332,8 @@ textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
     textD->hScrollBar = hScrollBar;
     textD->vScrollBar = vScrollBar;
     textD->fontStruct = fontStruct;
+    textD->utf8Font = NULL;
+    textD->utf8FontName = NULL;
     textD->ascent = fontStruct->ascent;
     textD->descent = fontStruct->descent;
     textD->fixedFontWidth = fontStruct->min_bounds.width ==
@@ -318,6 +434,9 @@ void TextDFree(textDisp *textD)
     releaseGC(textD->w, textD->highlightBGGC);
     releaseGC(textD->w, textD->styleGC);
     releaseGC(textD->w, textD->lineNumGC);
+    Utf8FontClose(textD->utf8Font);
+    NEditFree(textD->utf8FontName);
+    releaseGC(textD->w, textD->cursorFGGC);
     NEditFree(textD->lineStarts);
     while (TextDPopGraphicExposeQueueEntry(textD)) {
     }
@@ -342,11 +461,19 @@ void TextDSetBuffer(textDisp *textD, textBuffer *buffer)
     /* Add the buffer to the display, and attach a callback to the buffer for
        receiving modification information when the buffer contents change */
     textD->buffer = buffer;
+    if (buffer->encoding == BUF_ENCODING_UTF8 && !textD->utf8Font)
+        textD->utf8Font = Utf8FontOpen(textD->w, textD->utf8FontName);
     BufAddModifyCB(buffer, bufModifiedCB, textD);
     BufAddPreDeleteCB(buffer, bufPreDeleteCB, textD);
     
+    if (utf8Active(textD)) {
+        textD->fixedFontWidth = -1;
+        textD->ascent = Utf8FontAscent(textD->utf8Font);
+        textD->descent = Utf8FontDescent(textD->utf8Font);
+    }
     /* Update the display */
     bufModifiedCB(0, buffer->length, 0, 0, NULL, textD);
+    TextDSetFont(textD, textD->fontStruct);
 }
 
 /*
@@ -419,6 +546,25 @@ void TextDSetColors(textDisp *textD, Pixel textFgP, Pixel textBgP,
 /*
 ** Change the (non highlight) font
 */
+void TextDSetUtf8Font(textDisp *textD, const char *name)
+{
+    utf8Font *font;
+    char *copy;
+    if (!name || !*name) name = "monospace:size=12";
+    font = textD->buffer &&
+            textD->buffer->encoding == BUF_ENCODING_UTF8
+            ? Utf8FontOpen(textD->w, name) : NULL;
+    copy = (char *)NEditMalloc(strlen(name) + 1);
+    strcpy(copy, name);
+    Utf8FontClose(textD->utf8Font);
+    NEditFree(textD->utf8FontName);
+    textD->utf8Font = font;
+    textD->utf8FontName = copy;
+    if (!font && textD->buffer && textD->buffer->encoding == BUF_ENCODING_UTF8)
+        fprintf(stderr, "nedit: UTF-8 Xft font unavailable: %s\n", name);
+    TextDSetFont(textD, textD->fontStruct);
+}
+
 void TextDSetFont(textDisp *textD, XFontStruct *fontStruct)
 {
     Display *display = XtDisplay(textD->w);
@@ -429,6 +575,9 @@ void TextDSetFont(textDisp *textD, XFontStruct *fontStruct)
     XGCValues values;
     XFontStruct *styleFont;
     
+    textD->cursorPreferredX = -1;
+    textD->cursorPreferredCol = -1;
+
     /* If font size changes, cursor will be redrawn in a new position */
     blankCursorProtrusions(textD);
     
@@ -440,6 +589,10 @@ void TextDSetFont(textDisp *textD, XFontStruct *fontStruct)
             maxAscent = styleFont->ascent;
         if (styleFont != NULL && styleFont->descent > maxDescent)
             maxDescent = styleFont->descent;
+    }
+    if (utf8Active(textD)) {
+        maxAscent = Utf8FontAscent(textD->utf8Font);
+        maxDescent = Utf8FontDescent(textD->utf8Font);
     }
     textD->ascent = maxAscent;
     textD->descent = maxDescent;
@@ -457,7 +610,7 @@ void TextDSetFont(textDisp *textD, XFontStruct *fontStruct)
                 fontWidth = -1;
         }
     }
-    textD->fixedFontWidth = fontWidth;
+    textD->fixedFontWidth = utf8Active(textD) ? -1 : fontWidth;
     
     /* Don't let the height dip below one line, or bad things can happen */
     if (textD->height < maxAscent + maxDescent)
@@ -523,6 +676,8 @@ int TextDMinFontWidth(textDisp *textD, Boolean considerStyles)
             }
         }
     }
+    if (utf8Active(textD))
+        return max(1, Utf8FontWidth(textD->utf8Font, " ", 1, 0));
     return(fontWidth);
 }
 
@@ -539,6 +694,8 @@ int TextDMaxFontWidth(textDisp *textD, Boolean considerStyles)
             }
         }
     }
+    if (utf8Active(textD))
+        return max(1, Utf8FontWidth(textD->utf8Font, " ", 1, 0));
     return(fontWidth);
 }
 
@@ -770,6 +927,7 @@ void TextDGetScroll(textDisp *textD, int *topLineNum, int *horizOffset)
 */
 void TextDSetInsertPosition(textDisp *textD, int newPos)
 {
+    newPos = BufStartOfCharacter(textD->buffer, newPos);
     /* make sure new position is ok, do nothing if it hasn't changed */
     if (newPos == textD->cursorPos)
     	return;
@@ -778,6 +936,7 @@ void TextDSetInsertPosition(textDisp *textD, int newPos)
  
     /* cursor movement cancels vertical cursor motion column */
     textD->cursorPreferredCol = -1;
+    textD->cursorPreferredX = -1;
    
     /* erase the cursor at it's previous position */
     TextDBlankCursor(textD);
@@ -877,32 +1036,36 @@ void TextDOverstrike(textDisp *textD, char *text)
     textBuffer *buf = textD->buffer;
     int lineStart = BufStartOfLine(buf, startPos);
     int textLen = strlen(text);
-    int i, p, endPos, indent, startIndent, endIndent;
+    int i, p, endPos, indent, startIndent, endIndent, byteLen;
     char *c, ch, *paddedText = NULL;
     
     /* determine how many displayed character positions are covered */
     startIndent = BufCountDispChars(textD->buffer, lineStart, startPos);
     indent = startIndent;
-    for (c=text; *c!='\0'; c++)
-    	indent += BufCharWidth(*c, indent, buf->tabDist, buf->nullSubsChar);
+    for (c=text; c < text + textLen; c += byteLen) {
+        byteLen = buf->encoding == BUF_ENCODING_UTF8
+                ? Utf8Decode(c, text + textLen - c, NULL, NULL) : 1;
+        indent += byteLen == 1
+                ? BufCharWidth(*c, indent, buf->tabDist, buf->nullSubsChar) : 1;
+    }
     endIndent = indent;
     
     /* find which characters to remove, and if necessary generate additional
        padding to make up for removed control characters at the end */
     indent=startIndent;
-    for (p=startPos; ; p++) {
+    for (p=startPos; ; p = BufNextCharacter(buf, p)) {
     	if (p == buf->length)
     	    break;
     	ch = BufGetCharacter(buf, p);
     	if (ch == '\n')
     	    break;
-    	indent += BufCharWidth(ch, indent, buf->tabDist, buf->nullSubsChar);
+        indent += BufCodepointWidth(buf, p, indent);
     	if (indent == endIndent) {
-    	    p++;
+            p = BufNextCharacter(buf, p);
     	    break;
     	} else if (indent > endIndent) {
     	    if (ch != '\t') {
-    	    	p++;
+                p = BufNextCharacter(buf, p);
     	    	paddedText = (char*)NEditMalloc(textLen + MAX_EXP_CHAR_LEN + 1);
     	    	strcpy(paddedText, text);
     	    	for (i=0; i<indent-endIndent; i++)
@@ -972,6 +1135,10 @@ int TextDLineAndColToPos(textDisp *textD, int lineNum, int column)
       return lineEnd;
     }
 
+    if (textD->buffer->encoding == BUF_ENCODING_UTF8)
+        return min(lineEnd, BufCountForwardDispChars(textD->buffer,
+                lineStart, max(0, column)));
+
     /* Start character index at zero */
     charIndex=0;
 
@@ -1036,6 +1203,14 @@ int TextDPositionToXY(textDisp *textD, int pos, int *x, int *y)
     	return True;
     }
     lineLen = visLineLength(textD, visLineNum);
+    if (utf8Active(textD)) {
+        utf8LineLayout *map = utf8LineMap(textD, lineStartPos, lineLen);
+        if (!map) return False;
+        *x = textD->left - textD->horizOffset +
+                Utf8LayoutByteToX(map, pos - lineStartPos);
+        Utf8LayoutFree(map);
+        return True;
+    }
     lineStr = BufGetRange(textD->buffer, lineStartPos, lineStartPos + lineLen);
     
     /* Step through character positions from the beginning of the line
@@ -1251,6 +1426,10 @@ int TextDPosOfPreferredCol(textDisp *textD, int column, int lineStartPos)
 {
     int newPos;
 
+    if (utf8Active(textD)) {
+        int start = TextDStartOfLine(textD, textD->cursorPos), preferred;
+        return utf8VerticalPosition(textD, start, lineStartPos, False, &preferred);
+    }
     newPos = BufCountForwardDispChars(textD->buffer, lineStartPos, column);
     if (textD->continuousWrap) {
         newPos = min(newPos, TextDEndOfLine(textD, lineStartPos, True));
@@ -1265,7 +1444,8 @@ int TextDMoveRight(textDisp *textD)
 {
     if (textD->cursorPos >= textD->buffer->length)
     	return False;
-    TextDSetInsertPosition(textD, textD->cursorPos + 1);
+    TextDSetInsertPosition(textD,
+            BufNextCharacter(textD->buffer, textD->cursorPos));
     return True;
 }
 
@@ -1273,13 +1453,33 @@ int TextDMoveLeft(textDisp *textD)
 {
     if (textD->cursorPos <= 0)
     	return False;
-    TextDSetInsertPosition(textD, textD->cursorPos - 1); 
+    TextDSetInsertPosition(textD,
+            BufPrevCharacter(textD->buffer, textD->cursorPos));
     return True;
+}
+
+static int utf8VerticalPosition(textDisp *textD, int start, int target,
+        int absolute, int *preferred)
+{
+    int end = absolute ? BufEndOfLine(textD->buffer, start)
+            : TextDEndOfLine(textD, start, True);
+    utf8LineLayout *map = utf8LineMap(textD, start, end - start);
+    int x = textD->cursorPreferredX;
+    int pos = target;
+    if (x < 0 && map) x = Utf8LayoutByteToX(map, textD->cursorPos - start);
+    Utf8LayoutFree(map);
+    end = absolute ? BufEndOfLine(textD->buffer, target)
+            : TextDEndOfLine(textD, target, True);
+    map = utf8LineMap(textD, target, end - target);
+    if (map) pos += Utf8LayoutXToByte(map, x, True);
+    Utf8LayoutFree(map);
+    *preferred = x;
+    return pos;
 }
 
 int TextDMoveUp(textDisp *textD, int absolute)
 {
-    int lineStartPos, column, prevLineStartPos, newPos, visLineNum;
+    int lineStartPos, column, prevLineStartPos, newPos, visLineNum, preferredX = -1;
     
     /* Find the position of the start of the line.  Use the line starts array
        if possible, to avoid unbounded line-counting in continuous wrap mode */
@@ -1309,7 +1509,9 @@ int TextDMoveUp(textDisp *textD, int absolute)
         prevLineStartPos = TextDCountBackwardNLines(textD, lineStartPos, 1);
     }
 
-    newPos = BufCountForwardDispChars(textD->buffer, prevLineStartPos, column);
+    newPos = utf8Active(textD) ? utf8VerticalPosition(textD, lineStartPos,
+            prevLineStartPos, absolute, &preferredX) :
+            BufCountForwardDispChars(textD->buffer, prevLineStartPos, column);
     if (textD->continuousWrap && !absolute)
     	newPos = min(newPos, TextDEndOfLine(textD, prevLineStartPos, True));
     
@@ -1318,13 +1520,14 @@ int TextDMoveUp(textDisp *textD, int absolute)
     
     /* if a preferred column wasn't aleady established, establish it */
     textD->cursorPreferredCol = column;
+    textD->cursorPreferredX = preferredX;
     
     return True;
 }
 
 int TextDMoveDown(textDisp *textD, int absolute)
 {
-    int lineStartPos, column, nextLineStartPos, newPos, visLineNum;
+    int lineStartPos, column, nextLineStartPos, newPos, visLineNum, preferredX = -1;
 
     if (textD->cursorPos == textD->buffer->length) {
         return False;
@@ -1349,7 +1552,9 @@ int TextDMoveDown(textDisp *textD, int absolute)
     else
         nextLineStartPos = TextDCountForwardNLines(textD, lineStartPos, 1, True);
 
-    newPos = BufCountForwardDispChars(textD->buffer, nextLineStartPos, column);
+    newPos = utf8Active(textD) ? utf8VerticalPosition(textD, lineStartPos,
+            nextLineStartPos, absolute, &preferredX) :
+            BufCountForwardDispChars(textD->buffer, nextLineStartPos, column);
 
     if (textD->continuousWrap && !absolute) {
         newPos = min(newPos, TextDEndOfLine(textD, nextLineStartPos, True));
@@ -1357,6 +1562,7 @@ int TextDMoveDown(textDisp *textD, int absolute)
 
     TextDSetInsertPosition(textD, newPos);
     textD->cursorPreferredCol = column;
+    textD->cursorPreferredX = preferredX;
     
     return True;
 }
@@ -1524,8 +1730,10 @@ static void bufModifiedCB(int pos, int nInserted, int nDeleted,
     int wrapModStart, wrapModEnd;
  
     /* buffer modification cancels vertical cursor motion column */
-    if (nInserted != 0 || nDeleted != 0)
-    	textD->cursorPreferredCol = -1;
+    if (nInserted != 0 || nDeleted != 0) {
+        textD->cursorPreferredCol = -1;
+        textD->cursorPreferredX = -1;
+    }
     
     /* Count the number of lines inserted and deleted, and in the case
        of continuous wrap mode, how much has changed */
@@ -1583,6 +1791,8 @@ static void bufModifiedCB(int pos, int nInserted, int nDeleted,
     	else
     	    textD->cursorPos += nInserted - nDeleted;
     }
+
+    textD->cursorPos = BufStartOfCharacter(buf, textD->cursorPos);
 
     /* If the changes caused scrolling, re-paint everything and we're done. */
     if (scrolled) {
@@ -1763,6 +1973,11 @@ static void redisplayLine(textDisp *textD, int visLineNum, int leftClip,
     /* If line is not displayed, skip it */
     if (visLineNum < 0 || visLineNum >= textD->nVisibleLines)
     	return;
+
+    if (utf8Active(textD)) {
+        redisplayUtf8Line(textD, visLineNum);
+        return;
+    }
 
     /* Shrink the clipping range to the active display area */
     leftClip = max(textD->left, leftClip);
@@ -1956,6 +2171,46 @@ static void drawString(textDisp *textD, int style, int x, int y, int toX,
     if (XtWindow(textD->w) == 0)
     	return;
     
+    if (utf8Active(textD)) {
+        int index = (style & STYLE_LOOKUP_MASK) - ASCII_A;
+        styleTableEntry *rec = index >= 0 && index < textD->nStyles
+                ? &textD->styleTable[index] : NULL;
+        fground = style & PRIMARY_MASK ? textD->selectFGPixel :
+                style & HIGHLIGHT_MASK ? textD->highlightFGPixel :
+                rec ? rec->color : textD->fgPixel;
+        bground = style & PRIMARY_MASK ? textD->selectBGPixel :
+                style & HIGHLIGHT_MASK ? textD->highlightBGPixel :
+                style & RANGESET_MASK ? getRangesetColor(textD,
+                    (style & RANGESET_MASK) >> RANGESET_SHIFT, bground) :
+                rec && rec->bgColorName ? rec->bgColor :
+                (style & BACKLIGHT_MASK) && !(style & FILL_MASK) ?
+                    textD->bgClassPixel[(style >> BACKLIGHT_SHIFT) & 0xff] :
+                textD->bgPixel;
+        if ((style & FILL_MASK) || string == NULL) {
+            int left = max(x, textD->left);
+            int right = min(toX, textD->left + textD->width);
+            if (right > left) {
+                XSetForeground(XtDisplay(textD->w), textD->styleGC, bground);
+                XFillRectangle(XtDisplay(textD->w), XtWindow(textD->w),
+                        textD->styleGC, left, y, right - left,
+                        textD->ascent + textD->descent);
+            }
+        } else {
+            Utf8FontDraw(textD->utf8Font, fground, x, y + textD->ascent,
+                    string, nChars, utf8Face(textD, style), textD->left,
+                    max(y, textD->top), textD->width,
+                    min(textD->ascent + textD->descent,
+                        textD->top + textD->height - y));
+            if (style & SECONDARY_MASK || (rec && rec->underline)) {
+                XSetForeground(XtDisplay(textD->w), textD->styleGC, fground);
+                XDrawLine(XtDisplay(textD->w), XtWindow(textD->w),
+                        textD->styleGC, x, y + textD->ascent,
+                        toX - 1, y + textD->ascent);
+            }
+        }
+        return;
+    }
+
     /* select a GC */
     if (style & (STYLE_LOOKUP_MASK | BACKLIGHT_MASK | RANGESET_MASK)) {
         gc = bgGC = textD->styleGC;
@@ -2063,7 +2318,7 @@ static void clearRect(textDisp *textD, GC gc, int x, int y,
     	int width, int height)
 {
     /* A width of zero means "clear to end of window" to XClearArea */
-    if (width == 0 || XtWindow(textD->w) == 0)
+    if (width <= 0 || height <= 0 || XtWindow(textD->w) == 0)
     	return;
     
     if (gc == textD->gc) {
@@ -2091,6 +2346,16 @@ static void drawCursor(textDisp *textD, int x, int y)
 	    x > textD->left + textD->width)
     	return;
     
+    if (utf8Active(textD)) {
+        int next = BufNextCharacter(textD->buffer, textD->cursorPos);
+        int nx, ny;
+        fontWidth = Utf8FontWidth(textD->utf8Font, " ", 1, 0);
+        if (textD->cursorPos < textD->buffer->length &&
+                BufGetCharacter(textD->buffer, textD->cursorPos) != '\n' &&
+                TextDPositionToXY(textD, next, &nx, &ny) &&
+                ny == y + fontHeight/2) fontWidth = max(1, nx - x);
+    }
+
     /* For cursors other than the block, make them around 2/3 of a character
        width, rounded to an even number of pixels so that X will draw an
        odd number centered on the stem at x. */
@@ -2206,6 +2471,10 @@ static int stringWidth(const textDisp* textD, const char *string,
 {
     XFontStruct *fs;
     
+    if (utf8Active(textD))
+        return Utf8FontWidth(textD->utf8Font, string, length,
+                utf8Face(textD, style));
+
     if (style & STYLE_LOOKUP_MASK)
     	fs = textD->styleTable[(style & STYLE_LOOKUP_MASK) - ASCII_A].font;
     else 
@@ -2257,6 +2526,15 @@ static int xyToPos(textDisp *textD, int x, int y, int posType)
     
     /* Get the line text and its length */
     lineLen = visLineLength(textD, visLineNum);
+    if (utf8Active(textD)) {
+        utf8LineLayout *map = utf8LineMap(textD, lineStart, lineLen);
+        int pos;
+        if (!map) return lineStart;
+        pos = lineStart + Utf8LayoutXToByte(map,
+                x - textD->left + textD->horizOffset, posType == CURSOR_POS);
+        Utf8LayoutFree(map);
+        return pos;
+    }
     lineStr = BufGetRange(textD->buffer, lineStart, lineStart + lineLen);
     
     /* Step through character positions from the beginning of the line
@@ -2301,6 +2579,34 @@ static void xyToUnconstrainedPos(textDisp *textD, int x, int y, int *row,
     *row = (y - textD->top) / fontHeight;
     if (*row < 0) *row = 0;
     if (*row >= textD->nVisibleLines) *row = textD->nVisibleLines - 1;
+    if (utf8Active(textD)) {
+        int start = textD->lineStarts[*row];
+        int localX = x - textD->left + textD->horizOffset;
+        utf8LineLayout *map = start < 0 ? NULL :
+                utf8LineMap(textD, start, visLineLength(textD, *row));
+        int i;
+        fontWidth = max(1, Utf8FontWidth(textD->utf8Font, " ", 1, 0));
+        *column = 0;
+        if (map) {
+            for (i = 0; i < map->nCells; i++) {
+                utf8LayoutCell *cell = &map->cells[i];
+                if (localX < cell->xEnd && cell->xEnd > cell->xStart) {
+                    *column = cell->columnStart + max(0,
+                        (localX-cell->xStart)*(cell->columnEnd-cell->columnStart) +
+                        (posType == CURSOR_POS ? (cell->xEnd-cell->xStart)/2 : 0)) /
+                        (cell->xEnd-cell->xStart);
+                    Utf8LayoutFree(map);
+                    return;
+                }
+            }
+            *column = map->columns;
+            localX -= map->width;
+        }
+        *column += max(0, (localX +
+                (posType == CURSOR_POS ? fontWidth/2 : 0)) / fontWidth);
+        Utf8LayoutFree(map);
+        return;
+    }
     *column = ((x-textD->left) + textD->horizOffset +
     	    (posType == CURSOR_POS ? fontWidth/2 : 0)) / fontWidth;
     if (*column < 0) *column = 0;
@@ -2947,6 +3253,12 @@ static int measureVisLine(textDisp *textD, int visLineNum)
     int charCount = 0, lineStartPos = textD->lineStarts[visLineNum];
     char expandedChar[MAX_EXP_CHAR_LEN];
     
+    if (utf8Active(textD)) {
+        utf8LineLayout *map = utf8LineMap(textD, lineStartPos, lineLen);
+        width = map ? map->width : 0;
+        Utf8LayoutFree(map);
+        return width;
+    }
     if (textD->styleBuffer == NULL) {
 	for (i=0; i<lineLen; i++) {
     	    len = BufGetExpandedChar(textD->buffer, lineStartPos + i,
@@ -2986,7 +3298,7 @@ static int emptyLinesVisible(textDisp *textD)
 static void blankCursorProtrusions(textDisp *textD)
 {
     int x, width, cursorX = textD->cursorX, cursorY = textD->cursorY;
-    int fontWidth = textD->fontStruct->max_bounds.width;  
+    int fontWidth = TextDMaxFontWidth(textD, False);
     int fontHeight = textD->ascent + textD->descent;
     int cursorWidth, left = textD->left, right = left + textD->width;
     
@@ -3258,6 +3570,9 @@ static void findWrapRange(textDisp *textD, const char *deletedText, int pos,
 
     length = (pos-countFrom) + nDeleted +(countTo-(pos+nInserted));
     deletedTextBuf = BufCreatePreallocated(length);
+    BufSetEncoding(deletedTextBuf, textD->buffer->encoding);
+    deletedTextBuf->tabDist = textD->buffer->tabDist;
+    deletedTextBuf->nullSubsChar = textD->buffer->nullSubsChar;
     if (pos > countFrom)
         BufCopyFromBuf(textD->buffer, deletedTextBuf, countFrom, pos, 0);
     if (nDeleted != 0)
@@ -3367,6 +3682,90 @@ static void measureDeletedLines(textDisp *textD, int pos, int nDeleted)
 **   retLineStart:  Start of the line where counting ended
 **   retLineEnd:    End position of the last line traversed
 */
+/* Scalar-safe soft wrap. Explicit margins count logical columns; window
+   margins use the same glyph advances as the renderer. Scan only the current
+   physical line, and rescan the short suffix after a whitespace break. */
+static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
+        int startPos, int maxPos, int maxLines, Boolean isLineStart,
+        int styleOffset, int *retPos, int *retLines, int *retStart, int *retEnd)
+{
+    int start = isLineStart ? startPos : TextDStartOfLine(textD, startPos);
+    int p = start, lines = 0, columns = 0, pixels = 0, lastSpace = -1;
+    int next, end, newStart, advance, step, consumed, valid, length;
+    unsigned long scalar;
+    char expanded[MAX_EXP_CHAR_LEN], bytes[4];
+    while (p < buf->length) {
+        consumed = BufGetCodepoint(buf, p, &scalar, &valid);
+        next = p + consumed;
+        if (scalar == '\n') {
+            end = p;
+            newStart = next;
+        } else {
+            if (scalar == ' ' || scalar == '\t') lastSpace = p;
+            step = BufCodepointWidth(buf, p, columns);
+            if (scalar == '\t') {
+                expanded[0] = ' ';
+                length = 1;
+            } else if (scalar < 128 && valid) {
+                length = BufExpandCharacter(BufGetCharacter(buf, p), columns,
+                        expanded, buf->tabDist, buf->nullSubsChar);
+            } else {
+                length = valid ? consumed : 3;
+                if (valid) {
+                    int j;
+                    for (j = 0; j < consumed; j++) bytes[j] = BufGetCharacter(buf, p+j);
+                    memcpy(expanded, bytes, consumed);
+                } else memcpy(expanded, "\xef\xbf\xbd", 3);
+            }
+            {
+                utf8MeasureContext ctx;
+                ctx.textD = textD; ctx.start = styleOffset;
+                advance = measureUtf8Cell(expanded, length, p, &ctx);
+            }
+            if (scalar == '\t') advance = advance > 0 && step > INT_MAX/advance
+                    ? INT_MAX : advance * step;
+            if ((textD->wrapMargin > 0 &&
+                    step > textD->wrapMargin - columns) ||
+                    (textD->wrapMargin == 0 && advance > textD->width - pixels)) {
+                if (lastSpace >= start) {
+                    end = lastSpace;
+                    newStart = lastSpace + 1;
+                } else if (p > start) {
+                    end = p;
+                    newStart = p;
+                } else {
+                    /* Even a scalar wider than the viewport must progress. */
+                    columns = step > INT_MAX-columns ? INT_MAX : columns + step;
+                    pixels = advance > INT_MAX-pixels ? INT_MAX : pixels + advance;
+                    p = next;
+                    continue;
+                }
+            } else {
+                columns = step > INT_MAX-columns ? INT_MAX : columns + step;
+                pixels = advance > INT_MAX-pixels ? INT_MAX : pixels + advance;
+                p = next;
+                continue;
+            }
+        }
+        if ((scalar == '\n' && end >= maxPos) || newStart > maxPos) {
+            *retPos = maxPos; *retLines = lines;
+            *retStart = start; *retEnd = maxPos;
+            return;
+        }
+        lines++;
+        if (lines >= maxLines) {
+            *retPos = newStart; *retLines = lines;
+            *retStart = scalar == '\n' ? newStart : start;
+            *retEnd = end;
+            return;
+        }
+        start = p = newStart;
+        columns = pixels = 0; lastSpace = -1;
+    }
+    *retPos = buf->length; *retLines = lines;
+    *retStart = start; *retEnd = buf->length;
+}
+
 static void wrappedLineCounter(const textDisp* textD, const textBuffer* buf,
         int startPos, int maxPos, int maxLines,
         Boolean startPosIsLineStart, int styleBufOffset,
@@ -3378,6 +3777,13 @@ static void wrappedLineCounter(const textDisp* textD, const textBuffer* buf,
     unsigned char c;
     char nullSubsChar = textD->buffer->nullSubsChar;
     
+    if (utf8Active(textD) && buf->encoding == BUF_ENCODING_UTF8) {
+        wrappedUtf8Counter(textD, buf, startPos, maxPos, maxLines,
+                startPosIsLineStart, styleBufOffset, retPos, retLines,
+                retLineStart, retLineEnd);
+        return;
+    }
+
     /* If the font is fixed, or there's a wrap margin set, it's more efficient
        to measure in columns, than to count pixels.  Determine if we can count
        in columns (countPixels == False) or must count pixels (countPixels ==

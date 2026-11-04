@@ -51,11 +51,14 @@ typedef void (*bufModifyCallbackProc)(int pos, int nInserted, int nDeleted,
 	int nRestyled, const char *deletedText, void *cbArg);
 typedef void (*bufPreDeleteCallbackProc)(int pos, int nDeleted, void *cbArg);
 
+enum bufEncoding {BUF_ENCODING_8BIT, BUF_ENCODING_UTF8};
+
 typedef struct _textBuffer {
     int length; 	        /* length of the text in the buffer (the length
                                    of the buffer itself must be calculated:
                                    gapEnd - gapStart + length) */
     char *buf;                  /* allocated memory where the text is stored */
+    enum bufEncoding encoding;  /* text interpretation; storage/offsets are bytes */
     int gapStart;  	        /* points to the first character of the gap */
     int gapEnd;                 /* points to the first char after the gap */
     selection primary;		/* highlighted areas */
@@ -91,6 +94,16 @@ const char *BufAsString(textBuffer *buf);
 void BufSetAll(textBuffer *buf, const char *text);
 char* BufGetRange(const textBuffer* buf, int start, int end);
 char BufGetCharacter(const textBuffer* buf, int pos);
+/* Opt-in UTF-8 interpretation; style buffers remain 8-bit. These helpers
+   preserve byte offsets in both modes. */
+void BufSetEncoding(textBuffer *buf, enum bufEncoding encoding);
+int BufGetCodepoint(const textBuffer *buf, int pos, unsigned long *scalar,
+        int *valid);
+int BufStartOfCharacter(const textBuffer *buf, int pos);
+int BufEndOfCharacter(const textBuffer *buf, int pos);
+int BufNextCharacter(const textBuffer *buf, int pos);
+int BufPrevCharacter(const textBuffer *buf, int pos);
+int BufCodepointWidth(const textBuffer *buf, int pos, int indent);
 char *BufGetTextInRect(textBuffer *buf, int start, int end,
 	int rectStart, int rectEnd);
 void BufInsert(textBuffer *buf, int pos, const char *text);

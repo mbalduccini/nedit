@@ -133,6 +133,8 @@ void SetPrefFont(char *fontName);
 void SetPrefBoldFont(char *fontName);
 void SetPrefItalicFont(char *fontName);
 void SetPrefBoldItalicFont(char *fontName);
+int GetPrefUtf8(void);
+char *GetPrefUtf8Font(void);
 char *GetPrefFontName(void);
 char *GetPrefBoldFontName(void);
 char *GetPrefItalicFontName(void);
