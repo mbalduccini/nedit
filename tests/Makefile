@@ -2,7 +2,7 @@
 
 CC = cc
 CFLAGS = -O2 -Wall -Wextra
-CPPFLAGS = -I../source
+CPPFLAGS = -I../source -DHAVE_UTF8PROC $(shell pkg-config --cflags libutf8proc)
 
 all: test_utf8
 
@@ -12,7 +12,7 @@ test_utf8: test_utf8.c ../source/utf8.c ../source/utf8.h \
         ../util/nedit_malloc.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) test_utf8.c ../source/utf8.c ../source/utf8Layout.c \
 	    ../source/textBuf.c ../source/rangeset.c ../util/nedit_malloc.c \
-	    -o $@
+	    $(shell pkg-config --libs libutf8proc) -o $@
 
 check: test_utf8
 	./test_utf8
@@ -25,10 +25,25 @@ widget-objects:
 	$(MAKE) -C ../source -f Makefile.linux nedit nc
 
 test_utf8_widget: test_utf8_widget.c widget-objects
-	$(CC) $(CPPFLAGS) $(CFLAGS) test_utf8_widget.c $(WIDGET_OBJECTS) \
-	    ../util/libNUtil.a -lXm -lXt -lX11 -lm $(shell pkg-config --libs xft fontconfig) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) test_utf8_widget.c $(WIDGET_OBJECTS) -Wl,--wrap=XmImMbLookupString \
+	    ../util/libNUtil.a -lXm -lXt -lX11 -lm $(shell pkg-config --libs xft fontconfig libutf8proc) -o $@
 
-check-widget: test_utf8_widget
+APPLICATION_OBJECTS = $(filter-out ../source/nc.o,$(wildcard ../source/*.o))
+
+test_utf8_application: test_utf8_application.c widget-objects
+	$(CC) $(CPPFLAGS) $(CFLAGS) test_utf8_application.c $(APPLICATION_OBJECTS) \
+	    -Wl,--wrap=XtAppMainLoop ../Microline/XmL/libXmL.a ../Xlt/libXlt.a \
+	    ../util/libNUtil.a -lXm -lXt -lX11 -lm \
+	    $(shell pkg-config --libs xft fontconfig libutf8proc) -o $@
+
+check-widget: test_utf8_widget test_utf8_application
 	python run_widget_tests.py
 
-.PHONY: all check check-widget widget-objects
+check-sanitize:
+	$(CC) $(CPPFLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    test_utf8.c ../source/utf8.c ../source/utf8Layout.c ../source/textBuf.c \
+	    ../source/rangeset.c ../util/nedit_malloc.c \
+	    $(shell pkg-config --libs libutf8proc) -o test_utf8_sanitize
+	./test_utf8_sanitize
+
+.PHONY: all check check-widget check-sanitize widget-objects

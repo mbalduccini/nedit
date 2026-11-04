@@ -22,8 +22,8 @@ CFLAGS=-O -I/usr/X11R6/include -DUSE_DIRENT -DUSE_LPR_PRINT_CMD -ansi -U__STRICT
 # Set UTF8_XFT=0 to retain a build using only legacy X core fonts.
 UTF8_XFT ?= 1
 ifeq ($(UTF8_XFT),1)
-CFLAGS += -DHAVE_XFT $(shell pkg-config --cflags xft fontconfig)
-UTF8_LIBS = $(shell pkg-config --libs xft fontconfig)
+CFLAGS += -DHAVE_XFT -DHAVE_UTF8PROC $(shell pkg-config --cflags xft fontconfig libutf8proc)
+UTF8_LIBS = $(shell pkg-config --libs xft fontconfig libutf8proc)
 endif
 
 ARFLAGS=-urs

@@ -90,3 +90,6 @@ utf8Layout.o: utf8Layout.c utf8Layout.h utf8.h textBuf.h ../util/nedit_malloc.h
 
 utf8Font.o: utf8Font.c utf8Font.h utf8.h ../util/nedit_malloc.h
 textDisp.o: utf8Font.h utf8Layout.h
+
+text.o shift.o: utf8.h
+preferences.o: textP.h textDisp.h utf8Font.h

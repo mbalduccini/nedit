@@ -1,5 +1,8 @@
 /* Copyright 2026. Distributed under the same GPL terms as NEdit. */
 #include "utf8.h"
+#ifdef HAVE_UTF8PROC
+#include <utf8proc.h>
+#endif
 
 int Utf8Decode(const char *text, int available, unsigned long *scalar,
         int *valid)
@@ -40,4 +43,78 @@ int Utf8Decode(const char *text, int available, unsigned long *scalar,
     if (scalar != 0) *scalar = value;
     if (valid != 0) *valid = ok;
     return length;
+}
+
+int Utf8IsIgnorable(unsigned long scalar)
+{
+#ifdef HAVE_UTF8PROC
+    return utf8proc_get_property(scalar)->ignorable;
+#else
+    (void)scalar;
+    return 0;
+#endif
+}
+
+int Utf8CharWidth(unsigned long scalar)
+{
+#ifdef HAVE_UTF8PROC
+    return utf8proc_charwidth((utf8proc_int32_t)scalar);
+#else
+    (void)scalar;
+    return 1;
+#endif
+}
+
+int Utf8NextGrapheme(const char *text, int available, int *columns)
+{
+    unsigned long previous, scalar;
+    int pos, length, valid, width, nextWidth;
+#ifdef HAVE_UTF8PROC
+    utf8proc_int32_t state = 0;
+#endif
+    pos = Utf8Decode(text, available, &previous, &valid);
+    width = valid ? Utf8CharWidth(previous) : 1;
+    if (pos && valid) while (pos < available) {
+        length = Utf8Decode(text + pos, available - pos, &scalar, &valid);
+        if (!valid) break;
+#ifdef HAVE_UTF8PROC
+        if (utf8proc_grapheme_break_stateful(previous, scalar, &state)) break;
+#else
+        break;
+#endif
+        nextWidth = Utf8CharWidth(scalar);
+        if (nextWidth > width) width = nextWidth;
+        previous = scalar;
+        pos += length;
+    }
+    if (columns) *columns = pos ? width : 0;
+    return pos;
+}
+
+int Utf8NextGraphemeZ(const char *text, int *columns)
+{
+    unsigned long previous, scalar;
+    int pos = 0, length, valid, width = 0, available, nextWidth;
+#ifdef HAVE_UTF8PROC
+    utf8proc_int32_t state = 0;
+#endif
+    while (text[pos]) {
+        for (available = 1; available < 4 && text[pos + available]; available++);
+        length = Utf8Decode(text + pos, available, &scalar, &valid);
+        if (pos) {
+            if (!valid) break;
+#ifdef HAVE_UTF8PROC
+            if (utf8proc_grapheme_break_stateful(previous, scalar, &state)) break;
+#else
+            break;
+#endif
+        }
+        nextWidth = valid ? Utf8CharWidth(scalar) : 1;
+        if (nextWidth > width) width = nextWidth;
+        previous = scalar;
+        pos += length;
+        if (!valid) break;
+    }
+    if (columns) *columns = width;
+    return pos;
 }

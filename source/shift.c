@@ -31,6 +31,7 @@
 #endif
 
 #include "shift.h"
+#include "utf8.h"
 #include "textBuf.h"
 #include "text.h"
 #include "nedit.h"
@@ -63,10 +64,10 @@ static char *shiftLineRight(char *line, int lineLen, int tabsAllowed,
 static char *shiftLineLeft(char *line, int lineLen, int tabDist, int nChars);
 static int findLeftMargin(char *text, int length, int tabDist);
 static char *fillParagraphs(char *text, int rightMargin, int tabDist,
-	int useTabs, char nullSubsChar, int *filledLen, int alignWithFirst);
+        int useTabs, char nullSubsChar, int *filledLen, int alignWithFirst, enum bufEncoding encoding);
 static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
 	int rightMargin, int tabDist, int allowTabs, char nullSubsChar,
-	int *filledLen);
+        int *filledLen, enum bufEncoding encoding);
 static char *makeIndentString(int indent, int tabDist, int allowTabs, int *nChars);
 static int atTabStop(int pos, int tabDist);
 static int nextTab(int pos, int tabDist);
@@ -156,6 +157,8 @@ static void shiftRect(WindowInfo *window, int direction, int byTab,
     /* Create a temporary buffer for the lines containing the selection, to
        hide the intermediate steps from the display update routines */
     tempBuf = BufCreate();
+    BufSetEncoding(tempBuf, buf->encoding);
+    tempBuf->nullSubsChar = buf->nullSubsChar;
     tempBuf->tabDist = buf->tabDist;
     tempBuf->useTabs = buf->useTabs;
     text = BufGetRange(buf, selStart, selEnd);
@@ -285,7 +288,7 @@ void FillSelection(WindowInfo *window)
     
     /* Fill the text */
     filledText = fillParagraphs(text, rightMargin, buf->tabDist, buf->useTabs,
-	    buf->nullSubsChar, &len, False);
+            buf->nullSubsChar, &len, False, buf->encoding);
     NEditFree(text);
         
     /* Replace the text in the window */
@@ -530,7 +533,7 @@ static int findLeftMargin(char *text, int length, int tabDist)
 ** previous versions which did all paragraphs together).
 */
 static char *fillParagraphs(char *text, int rightMargin, int tabDist,
-	int useTabs, char nullSubsChar, int *filledLen, int alignWithFirst)
+        int useTabs, char nullSubsChar, int *filledLen, int alignWithFirst, enum bufEncoding encoding)
 {
     int paraStart, paraEnd, fillEnd;
     char *c, ch, *secondLineStart, *paraText, *filledText;
@@ -539,6 +542,7 @@ static char *fillParagraphs(char *text, int rightMargin, int tabDist,
     
     /* Create a buffer to accumulate the filled paragraphs */
     buf = BufCreate();
+    BufSetEncoding(buf, encoding);
     BufSetAll(buf, text);
     
     /*
@@ -582,7 +586,7 @@ static char *fillParagraphs(char *text, int rightMargin, int tabDist,
 
 	/* Fill the paragraph */
 	filledText = fillParagraph(paraText, leftMargin, firstLineIndent,
-		rightMargin, tabDist, useTabs, nullSubsChar, &len);
+                rightMargin, tabDist, useTabs, nullSubsChar, &len, encoding);
 	NEditFree(paraText);
 	
 	/* Replace it in the buffer */
@@ -609,11 +613,12 @@ static char *fillParagraphs(char *text, int rightMargin, int tabDist,
 */
 static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
 	int rightMargin, int tabDist, int allowTabs, char nullSubsChar,
-	int *filledLen)
+        int *filledLen, enum bufEncoding encoding)
 {
     char *cleanedText, *outText, *indentString, *leadIndentStr, *outPtr, *c, *b;
     int col, cleanedLen, indentLen, leadIndentLen, nLines = 1;
-    int inWhitespace, inMargin;
+    int inWhitespace, inMargin, bytes, columns;
+    textBuffer *graphemeBuf = NULL;
     
     /* remove leading spaces, convert newlines to spaces */
     cleanedText = (char*)NEditMalloc(strlen(text)+1);
@@ -641,32 +646,46 @@ static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
     }
     cleanedLen = outPtr - cleanedText;
     *outPtr = '\0';
+    if (encoding == BUF_ENCODING_UTF8) {
+        graphemeBuf = BufCreate();
+        BufSetEncoding(graphemeBuf, encoding);
+        BufSetAll(graphemeBuf, cleanedText);
+    }
     
     /* Put back newlines breaking text at word boundaries within the margins.
        Algorithm: scan through characters, counting columns, and when the
        margin width is exceeded, search backward for beginning of the word
        and convert the last whitespace character into a newline */
     col = firstLineIndent;
-    for (c=cleanedText; *c!='\0'; c++) {
+    for (c=cleanedText; *c!='\0'; c += bytes) {
+        bytes = encoding == BUF_ENCODING_UTF8 ? Utf8NextGraphemeZ(c, &columns) : 1;
     	if (*c == '\n')
     	    col = leftMargin;
     	else
-    	    col += BufCharWidth(*c, col, tabDist, nullSubsChar);
-    	if (col-1 > rightMargin) {
-    	    inWhitespace = True;
-    	    for (b=c; b>=cleanedText && *b!='\n'; b--) {
-    	    	if (*b == '\t' || *b == ' ') {
-    	    	    if (!inWhitespace) {
-    	    		*b = '\n';
-    	    		c = b;
-    	    		col = leftMargin;
-     	    		nLines++;
-   	    		break;
-    	    	    }
-    	    	} else 
-    	    	    inWhitespace = False;
-    	    }
-    	}
+            col += encoding == BUF_ENCODING_UTF8 && bytes > 1 ? columns :
+                BufCharWidth(*c, col, tabDist, nullSubsChar);
+        if (col-1 > rightMargin) {
+            inWhitespace = True;
+            for (b=c; b>=cleanedText && *b!='\n';) {
+                if ((*b == '\t' || *b == ' ') && (!graphemeBuf ||
+                        BufNextGrapheme(graphemeBuf, b-cleanedText) == b-cleanedText+1)) {
+                    if (!inWhitespace) {
+                        *b = '\n';
+                        if (graphemeBuf)
+                            BufReplace(graphemeBuf, b-cleanedText, b-cleanedText+1, "\n");
+                        c = b;
+                        bytes = 1;
+                        col = leftMargin;
+                        nLines++;
+                        break;
+                    }
+                } else
+                    inWhitespace = False;
+                if (b == cleanedText) break;
+                b = graphemeBuf ? cleanedText + BufPrevGrapheme(graphemeBuf,
+                        b-cleanedText) : b-1;
+            }
+        }
     }
     nLines++;
 
@@ -692,12 +711,13 @@ static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
     }
     
     /* convert any trailing space to newline.  Add terminating null */
-    if (*(outPtr-1) == ' ')
+    if (outPtr > outText && *(outPtr-1) == ' ')
     	*(outPtr-1) = '\n';
     *outPtr = '\0';
     
     /* clean up, return result */
     NEditFree(cleanedText);
+    if (graphemeBuf) BufFree(graphemeBuf);
     NEditFree(leadIndentStr);
     NEditFree(indentString);
     *filledLen = outPtr - outText;

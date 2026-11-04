@@ -150,8 +150,8 @@ Primary files: `source/textDisp.c`, `source/textBuf.c`, `source/text.c`,
 
 ## Phase 3: broad multilingual layout
 
-- Integrate grapheme segmentation, script shaping, Unicode line breaking,
-  bidirectional layout, and visual/logical cursor mapping.
+- Extend the Phase 1 grapheme mapping with script shaping, Unicode line
+  breaking, bidirectional layout, and visual/logical cursor mapping.
 - Assess a Pango-based layout layer or HarfBuzz plus a bidi library. Keep the
   byte-to-layout mapping so selections, styles, and undo still refer to the
   original document bytes.
@@ -188,7 +188,7 @@ Acceptance for the first usable phase:
 ## Trying this implementation
 
 Work is on branch `classic-UTF-8`. Build on Linux/Termux with `make linux`;
-Xft and Fontconfig development files and `pkg-config` are required. Launch the
+Xft, Fontconfig, utf8proc development files, and `pkg-config` are required. Launch the
 workspace binary explicitly:
 
 ```sh
@@ -211,71 +211,97 @@ nedit.utf8: True
 nedit.utf8Font: monospace:size=12
 ```
 
-They can also be supplied using `-xrm`. The existing Font dialog continues to
-configure legacy XLFD fonts; UTF-8 fonts currently use `-utf8font` or the resource.
-A document encoding selector and a GUI Fontconfig font selector remain pending.
+They can also be supplied using `-xrm`. Preferences > UTF-8 Document switches
+interpretation for the current document and all its panes, without transcoding
+bytes or altering undo records. Preferences > Default Settings > UTF-8 by Default
+sets the policy for newly opened documents. Save Defaults persists this setting.
+Preferences > UTF-8 Font lists installed Fontconfig families and accepts a family
+and size, with Apply and OK. The corresponding Default Settings entry sets the
+font for new documents. Existing Text Fonts continues to configure legacy XLFD
+fonts. Actions `set_encoding("utf8")`, `set_encoding("8bit")`, and
+`set_utf8_font("monospace:size=12")` provide the same document controls.
 For a build without Xft use `make linux UTF8_XFT=0`; it retains the legacy
 renderer and document mode. Backend switches trigger object rebuilding.
 Other platform makefiles currently retain their legacy build configuration.
 
-## Progress
+## Phase 1 completion
 
-Implemented and validated a first usable drawing/layout/editing increment:
+Phase 1 is implemented for the Linux/Xft configuration, retaining a separate
+legacy single-byte build. The following work is complete:
 
-- Strict bounded decoding for all Unicode scalar values, byte-preserving recovery
-  for malformed input, and character boundaries across the gap buffer.
-- Opt-in UTF-8 document buffers with byte offsets retained for undo, styles, file
-  I/O, and existing application callbacks.
-- Xft glyph drawing and Fontconfig fallback, including normal, bold, italic, and
-  bold-italic styles. Missing installed glyphs use the font's missing-glyph box.
-  Fallback fonts are reduced when necessary to fit the stable line height.
-- A scalar line map used for drawing, width measurement, cursor positioning,
-  hit testing, and pixel-aware vertical movement. Window soft wrapping uses the
-  same glyph advances; explicit wrap margins count logical columns. Tabs and
-  controls expand without interpreting their bytes as separate UTF-8 characters.
-- Scalar-safe Left/Right, Backspace/Delete, plain selection endpoints, overstrike,
-  configured-delimiter word movement/deletion, and hard auto-wrap at whitespace.
-  Non-ASCII scalars currently count as one logical column even if glyph widths
-  differ; this is not yet a terminal-style East Asian column-width policy.
-- Selection backgrounds, syntax colors/faces/underlines, clipping, horizontal
-  scroll measurement, resize, and separate Fontconfig font resource updates.
-- Motif input lookup retries with a dynamically sized buffer on overflow. Full
-  interactive input-method/preedit testing remains pending.
-- Decoder/buffer/layout tests covering every Unicode scalar, malformed input,
-  every gap position in mixed text, selection boundaries, and pixel mappings.
-- Isolated Xvfb widget tests for real editing actions, undo/redo, glyph pixels,
-  installed CJK/supplementary fallback glyphs, proportional hit testing/vertical
-  movement, style transitions inside scalar bytes, selections, resize, wrapping,
-  and legacy byte mode. A generated screenshot has been visually inspected.
-- Full application edit/save/reopen checks preserving UTF-8, malformed bytes,
-  and embedded NULs. Existing `appendLF` and line-ending preferences still apply;
-  byte-preservation checks explicitly disable the automatic trailing newline.
+- Strict bounded UTF-8 decoding, scalar access across the gap, and byte-preserving
+  malformed-input rendering; byte offsets remain the low-level API contract.
+- Xft drawing with normal/bold/italic/bold-italic faces, Fontconfig fallback,
+  clipping, colors, selections, underlines, range sets, and resource cleanup.
+- utf8proc extended grapheme boundaries for ordinary cursor motion, deletion,
+  selections, overstrike, mouse placement, configured-delimiter word editing,
+  and wrapping. Combining sequences and emoji/ZWJ sequences are indivisible for
+  these operations; this does not imply script shaping or emoji ligature drawing.
+- Unicode columns: ordinary characters use utf8proc width, East Asian wide
+  characters use two columns, ambiguous characters use one, and grapheme width
+  is the maximum constituent scalar width. Combining marks use zero advance;
+  tabs go to logical tab stops and ASCII controls retain their expanded labels.
+  Pixels remain actual font advances, so proportional text is measured by glyphs.
+- Rectangular copy, insert, delete, replace, overlay, drag/drop/cancel, column shifting,
+  and paragraph filling preserve complete graphemes. The left rectangle edge
+  rounds past a non-tab grapheme that straddles it; the right edge includes a
+  straddling grapheme. Insertion into a wide grapheme snaps after it. Tabs may be
+  split into padding. Copy/delete follow the same whole-character edge policy;
+  overlay and overstrike preserve the remaining column extent with padding.
+  A combining mark committed separately in overstrike mode joins its base
+  without erasing the next grapheme. Wrapping skips whitespace with attached
+  combining marks when choosing a whitespace break.
+- Document/default encoding controls and a GUI Fontconfig font chooser; font and
+  encoding settings are preserved in split panes and cloned documents.
+- Motif committed-text input with dynamic retry on overflow, UTF-8 locale lookup,
+  and cursor spot updates. Smart-indent callbacks retain their documented byte
+  positions and intact UTF-8 strings. ASCII indentation rules remain unchanged.
+- Save/reopen, CRLF conversion, include-file and incremental-backup checks,
+  including malformed bytes and NULs. Existing line-ending and appendLF policies
+  still apply; incremental backups use Unix newlines and append a final newline.
+- A physical-line grapheme boundary cache plus up to 16 display-line maps, bounded
+  by one MiB of source text except a single oversized line. Text, styles, fonts,
+  tabs, buffer attachment and encoding changes invalidate affected measurements.
+  Cursor redraw finds visible cells using binary search instead of traversing
+  every offscreen cell.
 
-Build/check commands are in `tests/README.md`. Existing compiler warnings remain
-in older code. No installed binary or running editor is replaced by this work.
+## Verification
 
-## Remaining work and limits of this increment
+`tests/README.md` describes the build and checks. The automated corpus exercises
+all Unicode scalars, malformed/truncated input, every gap position, grapheme and
+rectangle boundaries, logical/pixel mappings, actual widget actions, undo/redo,
+styles, fallback, scrolling, wrapping, encoding changes, split views, synthetic
+Motif key lookup, long input commits, full application menus/font chooser,
+drag completion with undo/redo, and file operations.
+ASan/UBSan checks cover decoder/buffer/layout and column operations.
 
-Phase 1 is not complete. In particular:
+Representative workspace results: 1,000 cursor moves and hit tests on a 200 KB
+line take about 0.18 CPU seconds after caching; a 2.2 MB mixed UTF-8 file
+opens, edits and saves in roughly 0.6-1.2 seconds. These are local measurements,
+not a performance guarantee for all fonts, files or machines. Long wrapped files
+still use NEdit's established whole-document wrap counting.
 
-- Rectangular copy/replace/delete, column drag/overlay, paragraph fill, and shifts
-  still contain byte-based column operations and need migration before they are
-  reliable on non-ASCII text. Their old implementations can corrupt UTF-8;
-  ordinary plain-selection editing is the supported path in this increment.
-- Grapheme editing and Unicode width properties are pending. Combining sequences
-  and emoji/ZWJ sequences may need several cursor moves/deletions. Shaping and
-  bidirectional layout are absent; Arabic/Indic/Hebrew are not fully supported.
-- Search/regex, case conversion, highlighting patterns, macros, and clipboard
-  remain byte-oriented or use legacy X selection protocols. ASCII highlighting
-  can work, but this is not Unicode regex support. Such operations may still
-  construct invalid UTF-8; malformed bytes are rendered without being rewritten.
-- Undo restores complete ordinary scalar edits; undo grouping retains its
-  existing byte-count classification. Printing, calltips, and other Motif dialogs
-  still use their previous rendering paths.
-- Long-line performance needs further profiling and layout caching; this
-  implementation creates temporary maps on demand and redraws complete visible
-  rows. It avoids per-scalar document scans, but does not yet meet the final
-  large-file responsiveness acceptance criterion.
+## Follow-on work and supported limits
 
-The next implementation step is Unicode column/grapheme semantics and migration
-of rectangular/column editing, followed by clipboard and search in phase 2.
+Phases 2 and 3 remain open:
+
+- Clipboard X selection protocols, Unicode search/regex/case conversion, syntax
+  patterns and macro string APIs retain their legacy behavior. Macros and custom
+  smart-indent programs still receive byte offsets; they may deliberately create
+  malformed UTF-8. Decoder recovery preserves those bytes rather than rewriting
+  them. The bundled smart-indent path has been exercised with UTF-8 comments.
+- Grapheme-safe editing is implemented; shaping, bidirectional layout, Unicode
+  line breaking and visual/logical navigation for complex scripts are not.
+  Simple combining marks draw over their base; typographic mark attachment,
+  Indic/Arabic shaping, emoji ligatures and bidirectional Hebrew need phase 3.
+- Motif owns preedit display. UTF-8 committed input and overflow handling are
+  covered, but external IME-specific preedit presentations require the broader
+  input-method work in phase 3. Printing, calltips and other Motif dialogs retain
+  their old font paths.
+- Undo/redo preserves complete byte sequences. Undo grouping still classifies
+  single-character operations by byte count, so multibyte typing may create
+  smaller undo groups than ASCII typing. Unicode-aware grouping is follow-on
+  behavior, not an offset change.
+
+The next implementation phase is clipboard, search, highlighting and Unicode
+macro APIs. No installed editor or running server is replaced by these changes.

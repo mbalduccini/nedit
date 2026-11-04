@@ -35,6 +35,7 @@
 #include "nedit.h"
 #include "menu.h"
 #include "text.h"
+#include "textP.h"
 #include "search.h"
 #include "window.h"
 #include "userCmds.h"
@@ -62,6 +63,9 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifdef HAVE_XFT
+#include <fontconfig/fontconfig.h>
+#endif
 #ifdef VMS
 #include "../util/VMSparam.h"
 #include <inttypes.h>
@@ -2048,6 +2052,8 @@ void SetPrefBoldItalicFont(char *fontName)
     PrefData.boldItalicFontStruct = XLoadQueryFont(TheDisplay, fontName);
 }
 
+void SetPrefUtf8(int state) { setIntPref(&PrefData.utf8, state); }
+void SetPrefUtf8Font(const char *name) { setStringPref(PrefData.utf8Font, name); }
 int GetPrefUtf8(void) { return PrefData.utf8; }
 char *GetPrefUtf8Font(void) { return PrefData.utf8Font; }
 
@@ -3810,9 +3816,111 @@ static int lmDialogEmpty(void)
 	    XmToggleButtonGetState(LMDialog.defaultWrapW);
 }   	
 
-/*
-** Present a dialog for changing fonts (primary, and for highlighting).
-*/
+/* Fontconfig chooser is independent of legacy XLFD font settings. */
+#ifdef HAVE_XFT
+typedef struct {
+    WindowInfo *window;
+    int forWindow, done;
+} utf8FontDialogState;
+
+static int compareFontNames(const void *left, const void *right)
+{ return strcmp(*(char *const *)left, *(char *const *)right); }
+
+static void utf8FontCancel(Widget w, XtPointer arg, XtPointer data)
+{ ((utf8FontDialogState *)arg)->done = True; }
+
+static void utf8FontApply(Widget w, XtPointer arg, XtPointer data)
+{
+    utf8FontDialogState *state = (utf8FontDialogState *)arg;
+    XmSelectionBoxCallbackStruct *cb = (XmSelectionBoxCallbackStruct *)data;
+    char *name = NULL;
+    utf8Font *font;
+    if (!XmStringGetLtoR(cb->value, XmFONTLIST_DEFAULT_TAG, &name)) return;
+    if (!*name || strlen(name) >= MAX_FONT_LEN) { XtFree(name); return; }
+    font = Utf8FontOpen(state->window->textArea, name);
+    if (!font) {
+        DialogF(DF_ERR, w, 1, "UTF-8 Font", "Unable to load font: %s", "OK", name);
+        XtFree(name); return;
+    }
+    Utf8FontClose(font);
+    if (state->forWindow) SetUtf8Font(state->window, name);
+    else SetPrefUtf8Font(name);
+    XtFree(name);
+    if (cb->reason == XmCR_OK) state->done = True;
+}
+#endif
+
+void ChooseUtf8Font(WindowInfo *window, int forWindow)
+{
+#ifdef HAVE_XFT
+    utf8FontDialogState state;
+    FcPattern *pattern = FcPatternCreate();
+    FcObjectSet *objects = FcObjectSetBuild(FC_FAMILY, NULL);
+    FcFontSet *fonts = FcFontList(NULL, pattern, objects);
+    char **names;
+    XmString *items, label, current;
+    FcChar8 *family;
+    Widget dialog;
+    int i, count = 0, unique = 0;
+    Arg args[10];
+    state.window = window; state.forWindow = forWindow; state.done = False;
+    names = (char **)NEditMalloc((fonts ? fonts->nfont : 0) * sizeof(char *));
+    if (fonts) for (i = 0; i < fonts->nfont; i++) {
+        if (FcPatternGetString(fonts->fonts[i], FC_FAMILY, 0, &family) == FcResultMatch) {
+            FcPattern *choice = FcPatternCreate();
+            FcChar8 *name;
+            FcPatternAddString(choice, FC_FAMILY, family);
+            FcPatternAddDouble(choice, FC_SIZE, 12);
+            name = FcNameUnparse(choice);
+            if (name) {
+                names[count] = (char *)NEditMalloc(strlen((char *)name) + 1);
+                strcpy(names[count++], (char *)name);
+                FcStrFree(name);
+            }
+            FcPatternDestroy(choice);
+        }
+    }
+    qsort(names, count, sizeof(char *), compareFontNames);
+    items = (XmString *)NEditMalloc(count * sizeof(XmString));
+    for (i = 0; i < count; i++) {
+        if (i == 0 || strcmp(names[i], names[i - 1]))
+            items[unique++] = XmStringCreateLocalized(names[i]);
+    }
+    for (i = 0; i < count; i++) NEditFree(names[i]);
+    NEditFree(names);
+    label = XmStringCreateLocalized("Font family and size (example: monospace:size=12):");
+    current = XmStringCreateLocalized(forWindow ?
+            ((TextWidget)window->textArea)->text.textD->utf8FontName : GetPrefUtf8Font());
+    XtSetArg(args[0], XmNlistItems, items);
+    XtSetArg(args[1], XmNlistItemCount, unique);
+    XtSetArg(args[2], XmNlistVisibleItemCount, 12);
+    XtSetArg(args[3], XmNselectionLabelString, label);
+    XtSetArg(args[4], XmNtextString, current);
+    XtSetArg(args[5], XmNmustMatch, False);
+    XtSetArg(args[6], XmNautoUnmanage, False);
+    XtSetArg(args[7], XmNdialogStyle, XmDIALOG_FULL_APPLICATION_MODAL);
+    dialog = XmCreateSelectionDialog(window->shell, "utf8Font", args, 8);
+    XtVaSetValues(XtParent(dialog), XmNtitle,
+            forWindow ? "UTF-8 Document Font" : "Default UTF-8 Font", NULL);
+    XtUnmanageChild(XmSelectionBoxGetChild(dialog, XmDIALOG_HELP_BUTTON));
+    XtVaSetValues(XmSelectionBoxGetChild(dialog, XmDIALOG_TEXT),
+            XmNmaxLength, MAX_FONT_LEN - 1, NULL);
+    XtAddCallback(dialog, XmNokCallback, utf8FontApply, &state);
+    XtAddCallback(dialog, XmNapplyCallback, utf8FontApply, &state);
+    XtAddCallback(dialog, XmNcancelCallback, utf8FontCancel, &state);
+    AddMotifCloseCallback(XtParent(dialog), utf8FontCancel, &state);
+    for (i = 0; i < unique; i++) XmStringFree(items[i]);
+    NEditFree(items); XmStringFree(label); XmStringFree(current);
+    if (fonts) FcFontSetDestroy(fonts);
+    FcObjectSetDestroy(objects); FcPatternDestroy(pattern);
+    XtManageChild(dialog);
+    while (!state.done) XtAppProcessEvent(XtWidgetToApplicationContext(dialog), XtIMAll);
+    XtDestroyWidget(XtParent(dialog));
+#else
+    DialogF(DF_ERR, window->shell, 1, "UTF-8 Font", "This build has no Xft renderer", "OK");
+#endif
+}
+
 void ChooseFonts(WindowInfo *window, int forWindow)
 {
 #define MARGIN_SPACING 10

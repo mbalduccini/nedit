@@ -1236,6 +1236,7 @@ void SplitPane(WindowInfo *window)
     /* Fix up the colors */
     textD = ((TextWidget)window->textArea)->text.textD;
     newTextD = ((TextWidget)text)->text.textD;
+    XtVaSetValues(text, textNutf8Font, textD->utf8FontName, NULL);
     XtVaSetValues(text,
                 XmNforeground, textD->fgPixel,
                 XmNbackground, textD->bgPixel,
@@ -1764,6 +1765,35 @@ void UpdateNewOppositeMenu(WindowInfo *window, int openInTab)
                 XmNlabelString, lbl=XmStringCreateSimple("New Tab"), 
                 XmNmnemonic, 'T', NULL);
     XmStringFree(lbl);
+}
+
+void SetDocumentEncoding(WindowInfo *window, int utf8)
+{
+    int i;
+    Widget text;
+#ifndef HAVE_XFT
+    if (utf8) return;
+#endif
+    if (window->buffer->encoding == (utf8 ? BUF_ENCODING_UTF8 : BUF_ENCODING_8BIT)) return;
+    BufSetEncoding(window->buffer, utf8 ? BUF_ENCODING_UTF8 : BUF_ENCODING_8BIT);
+    for (i = 0; i <= window->nPanes; i++) {
+        text = i ? window->textPanes[i - 1] : window->textArea;
+        TextDRefreshEncoding(((TextWidget)text)->text.textD);
+    }
+    if (window->buffer->primary.selected && !window->buffer->primary.rectangular)
+        BufSelect(window->buffer, window->buffer->primary.start, window->buffer->primary.end);
+    RefreshMenuToggleStates(window);
+    UpdateMinPaneHeights(window);
+    UpdateStatsLine(window);
+}
+
+void SetUtf8Font(WindowInfo *window, const char *name)
+{
+    int i;
+    for (i = 0; i <= window->nPanes; i++)
+        XtVaSetValues(i ? window->textPanes[i - 1] : window->textArea,
+                textNutf8Font, name, NULL);
+    UpdateMinPaneHeights(window);
 }
 
 /*
@@ -3734,6 +3764,8 @@ void RefreshMenuToggleStates(WindowInfo *window)
     XtSetSensitive(window->delItem, window->wasSelected);
     
     /* Preferences menu */
+    XmToggleButtonSetState(window->utf8Item, window->buffer->encoding == BUF_ENCODING_UTF8, False);
+    XmToggleButtonSetState(window->utf8DefItem, GetPrefUtf8(), False);
     XmToggleButtonSetState(window->statsLineItem, window->showStats, False);
     XmToggleButtonSetState(window->iSearchLineItem, window->showISearchLine, False);
     XmToggleButtonSetState(window->lineNumsItem, window->showLineNumbers, False);
@@ -4203,6 +4235,7 @@ static void cloneTextPanes(WindowInfo *window, WindowInfo *orgWin)
 
             /* Fix up the colors */
             newTextD = ((TextWidget)text)->text.textD;
+            XtVaSetValues(text, textNutf8Font, textD->utf8FontName, NULL);
             XtVaSetValues(text, XmNforeground, textD->fgPixel,
                     XmNbackground, textD->bgPixel, NULL);
             TextDSetColors(newTextD, textD->fgPixel, textD->bgPixel, 
@@ -4271,6 +4304,8 @@ static void cloneDocument(WindowInfo *window, WindowInfo *orgWin)
     window->ignoreModify = True;
 
     /* copy the text buffer */
+    SetDocumentEncoding(window, orgWin->buffer->encoding == BUF_ENCODING_UTF8);
+    SetUtf8Font(window, ((TextWidget)orgWin->textArea)->text.textD->utf8FontName);
     orgDocument = BufAsString(orgWin->buffer);
     BufSetAll(window->buffer, orgDocument);
 

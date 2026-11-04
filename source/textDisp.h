@@ -29,6 +29,7 @@
 
 #include "textBuf.h"
 #include "utf8Font.h"
+#include "utf8Layout.h"
 
 #include <X11/Intrinsic.h>
 #include <X11/Xlib.h>
@@ -127,6 +128,13 @@ typedef struct _textDisp {
     XFontStruct *fontStruct;		/* Font structure for primary font */
     utf8Font *utf8Font;
     char *utf8FontName;
+    struct {
+        utf8LineLayout *map;
+        int start, length, tabDist;
+        char nullSubsChar;
+        unsigned long revision, styleRevision;
+    } utf8Maps[16];
+    int nextUtf8Map;
     int ascent, descent;		/* Composite ascent and descent for
     					   primary font + all-highlight fonts */
     int fixedFontWidth;			/* Font width if all current fonts are
@@ -183,6 +191,7 @@ void TextDSetColors(textDisp *textD, Pixel textFgP, Pixel textBgP,
         Pixel selectFgP, Pixel selectBgP, Pixel hiliteFgP, Pixel hiliteBgP, 
         Pixel lineNoFgP, Pixel cursorFgP);
 void TextDSetFont(textDisp *textD, XFontStruct *fontStruct);
+void TextDRefreshEncoding(textDisp *textD);
 void TextDSetUtf8Font(textDisp *textD, const char *name);
 int TextDMinFontWidth(textDisp *textD, Boolean considerStyles);
 int TextDMaxFontWidth(textDisp *textD, Boolean considerStyles);

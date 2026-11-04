@@ -16,7 +16,13 @@ tests/test_utf8
 tests/test_utf8_widget
 
 build-utf8.log
+build-unit.log
+build-widget.log
+build-sanitize.log
 tests/*-test.log
 tests/utf8-widget.ppm
 tests/utf8-widget.png
 .utf8-xft-*
+
+tests/test_utf8_sanitize
+tests/test_utf8_application

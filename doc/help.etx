@@ -4296,6 +4296,25 @@ X Resources
   cursor, makes the cursor in the text editing area of the window heavier and
   darker.
 
+**nedit.utf8**: False
+
+  Interpret newly opened documents as UTF-8. Preferences > UTF-8 Document
+  switches the current document without changing its bytes. Default Settings
+  > UTF-8 by Default sets new-document policy. Save Defaults persists it.
+  UTF-8 cursor movement, deletion, selections and column edits preserve whole
+  graphemes. Wide characters use two logical columns and combining marks zero;
+  tabs use logical stops and font advances determine pixel layout. Rectangle
+  edges never split a grapheme; insertion snaps after a straddling wide glyph.
+  Search, clipboard protocols, Unicode macro APIs and complex-script shaping
+  remain separate follow-on work. Use a UTF-8 locale for typed text.
+
+**nedit.utf8Font**: monospace:size=12
+
+  Fontconfig family and size for UTF-8 documents, independent of legacy XLFD
+  Text Fonts. Preferences > UTF-8 Font lists installed families, accepts size
+  changes and provides Apply/OK. Its Default Settings entry sets new-document
+  fonts. Normal, bold, italic and bold-italic syntax faces derive from the family.
+
 **nedit.autoScrollVPadding**: 4
 
   Number of lines to keep the cursor away from the top or bottom line of the
@@ -4881,6 +4900,14 @@ NEdit Command Line
 
 **-columns n**
   Default width in characters for an editing window.
+
+**-utf8**, **-8bit**
+
+  Select UTF-8 or legacy single-byte document interpretation; default is legacy.
+
+**-utf8font family:size=n**
+
+  Set the UTF-8 Fontconfig font, for example monospace:size=12.
 
 **-font font (or -fn font)**
   Font for text being edited (Font for menus and dialogs can be set with -xrm

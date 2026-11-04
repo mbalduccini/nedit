@@ -62,13 +62,13 @@ static void overlayRect(textBuffer *buf, int startPos, int rectStart,
     	int rectEnd, const char *insText, int *nDeleted, int *nInserted, int *endPos);
 static void insertColInLine(const char *line, const char *insLine, int column, int insWidth,
 	int tabDist, int useTabs, char nullSubsChar, char *outStr, int *outLen,
-	int *endOffset);
+        int *endOffset, enum bufEncoding encoding);
 static void deleteRectFromLine(const char *line, int rectStart, int rectEnd,
 	int tabDist, int useTabs, char nullSubsChar, char *outStr, int *outLen,
-	int *endOffset);
+        int *endOffset, enum bufEncoding encoding);
 static void overlayRectInLine(const char *line, const char *insLine, int rectStart,
     	int rectEnd, int tabDist, int useTabs, char nullSubsChar, char *outStr,
-    	int *outLen, int *endOffset);
+        int *outLen, int *endOffset, enum bufEncoding encoding);
 static void callPreDeleteCBs(textBuffer *buf, int pos, int nDeleted);
 static void callModifyCBs(textBuffer *buf, int pos, int nDeleted,
 	int nInserted, int nRestyled, const char *deletedText);
@@ -96,15 +96,15 @@ static int searchBackward(textBuffer *buf, int startPos, char searchChar,
 	int *foundPos);
 static char *copyLine(const char *text, int *lineLen);
 static int countLines(const char *string);
-static int textWidth(const char *text, int tabDist, char nullSubsChar);
+static int textWidth(const char *text, int tabDist, char nullSubsChar, enum bufEncoding encoding);
 static void findRectSelBoundariesForCopy(textBuffer *buf, int lineStartPos,
 	int rectStart, int rectEnd, int *selStart, int *selEnd);
 static char *realignTabs(const char *text, int origIndent, int newIndent,
-	int tabDist, int useTabs, char nullSubsChar, int *newLength);
+        int tabDist, int useTabs, char nullSubsChar, int *newLength, enum bufEncoding encoding);
 static char *expandTabs(const char *text, int startIndent, int tabDist,
-	char nullSubsChar, int *newLen);
+        char nullSubsChar, int *newLen, enum bufEncoding encoding);
 static char *unexpandTabs(const char *text, int startIndent, int tabDist,
-	char nullSubsChar, int *newLen);
+        char nullSubsChar, int *newLen, enum bufEncoding encoding);
 static int max(int i1, int i2);
 static int min(int i1, int i2);
 
@@ -147,6 +147,10 @@ textBuffer *BufCreatePreallocated(int requestedSize)
     buf = (textBuffer *)NEditMalloc(sizeof(textBuffer));
     buf->length = 0;
     buf->encoding = BUF_ENCODING_8BIT;
+    buf->revision = 1;
+    buf->graphemes = NULL;
+    buf->nGraphemes = 0;
+    buf->graphemeRevision = 0;
     buf->buf = (char*) NEditMalloc(requestedSize + PREFERRED_GAP_SIZE + 1);
     buf->buf[requestedSize + PREFERRED_GAP_SIZE] = '\0';
     buf->gapStart = 0;
@@ -185,6 +189,7 @@ textBuffer *BufCreatePreallocated(int requestedSize)
 void BufFree(textBuffer *buf)
 {
     NEditFree(buf->buf);
+    NEditFree(buf->graphemes);
     if (buf->nModifyProcs != 0) {
     	NEditFree(buf->modifyProcs);
     	NEditFree(buf->cbArgs);
@@ -263,6 +268,7 @@ void BufSetAll(textBuffer *buf, const char *text)
     buf->buf = (char*)NEditMalloc(length + PREFERRED_GAP_SIZE + 1);
     buf->buf[length + PREFERRED_GAP_SIZE] = '\0';
     buf->length = length;
+    buf->revision++;
     buf->gapStart = length/2;
     buf->gapEnd = buf->gapStart + PREFERRED_GAP_SIZE;
     memcpy(buf->buf, text, buf->gapStart);
@@ -333,11 +339,11 @@ char BufGetCharacter(const textBuffer* buf, int pos)
     	return buf->buf[pos + buf->gapEnd-buf->gapStart];
 }
 
-/* Set before attaching a display. A future document encoding action must
-   also invalidate the display's line starts and font/layout caches. */
+/* Encoding actions must also invalidate the display's line starts and font/layout caches. */
 void BufSetEncoding(textBuffer *buf, enum bufEncoding encoding)
 {
     buf->encoding = encoding;
+    buf->revision++;
 }
 
 /* Decode without requiring contiguous storage (the gap may split a scalar). */
@@ -409,17 +415,114 @@ int BufPrevCharacter(const textBuffer *buf, int pos)
     return max(0, pos - 1);
 }
 
-/* Phase 1 scalar columns: non-ASCII scalars occupy one logical column.
-   Wide/zero-width/grapheme semantics will use Unicode properties in layout. */
+/* Scalar widths remain useful to low-level callers; editing and columns use
+   complete graphemes. Malformed bytes occupy one column. */
 int BufCodepointWidth(const textBuffer *buf, int pos, int indent)
 {
-    int length = BufGetCodepoint(buf, pos, NULL, NULL);
-
-    if (length == 0) return 0;
-    if (length == 1)
+    unsigned long scalar;
+    int valid, length = BufGetCodepoint(buf, pos, &scalar, &valid);
+    if (!length) return 0;
+    if (buf->encoding != BUF_ENCODING_UTF8)
         return BufCharWidth(BufGetCharacter(buf, pos), indent,
                 buf->tabDist, buf->nullSubsChar);
-    return 1;
+    if (scalar < 128 && valid)
+        return BufCharWidth(BufGetCharacter(buf, pos), indent,
+                buf->tabDist, buf->nullSubsChar);
+    return valid ? Utf8CharWidth(scalar) : 1;
+}
+
+/* Cache one physical line's UAX #29 boundaries. Sequential motion and reverse
+   motion are logarithmic after one scan, including long combining/RI runs.
+   Low-level byte mutations invalidate this cache, without snapping macro or
+   style-buffer offsets. Moving the gap does not invalidate it. */
+static int graphemeIndex(const textBuffer *buffer, int pos)
+{
+    textBuffer *buf = (textBuffer *)buffer;
+    char *text;
+    int start, end, p, capacity, low, high, mid;
+    if (buf->graphemeRevision != buf->revision ||
+            pos < buf->graphemeStart || pos > buf->graphemeEnd) {
+        start = BufStartOfLine(buf, pos);
+        end = BufEndOfLine(buf, pos);
+        text = BufGetRange(buf, start, end);
+        capacity = 128;
+        NEditFree(buf->graphemes);
+        buf->graphemes = (int *)NEditMalloc(capacity * sizeof(int));
+        buf->nGraphemes = 0;
+        for (p = 0; p < end - start;) {
+            if (buf->nGraphemes == capacity) {
+                capacity *= 2;
+                buf->graphemes = (int *)NEditRealloc(buf->graphemes,
+                        capacity * sizeof(int));
+            }
+            buf->graphemes[buf->nGraphemes++] = start + p;
+            p += Utf8NextGrapheme(text + p, end - start - p, NULL);
+        }
+        if (buf->nGraphemes == capacity)
+            buf->graphemes = (int *)NEditRealloc(buf->graphemes,
+                    (capacity + 1) * sizeof(int));
+        buf->graphemes[buf->nGraphemes++] = end;
+        buf->graphemeStart = start;
+        buf->graphemeEnd = end;
+        buf->graphemeRevision = buf->revision;
+        NEditFree(text);
+    }
+    low = 0; high = buf->nGraphemes;
+    while (low < high) {
+        mid = low + (high - low) / 2;
+        if (buf->graphemes[mid] <= pos) low = mid + 1;
+        else high = mid;
+    }
+    return max(0, low - 1);
+}
+
+int BufStartOfGrapheme(const textBuffer *buf, int pos)
+{
+    pos = max(0, min(pos, buf->length));
+    if (buf->encoding != BUF_ENCODING_UTF8) return pos;
+    pos = graphemeIndex(buf, pos);
+    return buf->graphemes[pos];
+}
+
+int BufEndOfGrapheme(const textBuffer *buf, int pos)
+{
+    int start = BufStartOfGrapheme(buf, pos);
+    return start < pos ? BufNextGrapheme(buf, start) : start;
+}
+
+int BufNextGrapheme(const textBuffer *buf, int pos)
+{
+    int i;
+    pos = max(0, min(pos, buf->length));
+    if (buf->encoding != BUF_ENCODING_UTF8) return min(pos + 1, buf->length);
+    i = graphemeIndex(buf, pos);
+    return i + 1 < buf->nGraphemes ? buf->graphemes[i + 1]
+            : min(buf->graphemeEnd + 1, buf->length);
+}
+
+int BufPrevGrapheme(const textBuffer *buf, int pos)
+{
+    int i;
+    pos = max(0, min(pos, buf->length));
+    if (buf->encoding != BUF_ENCODING_UTF8) return max(0, pos - 1);
+    i = graphemeIndex(buf, pos);
+    if (buf->graphemes[i] < pos) return buf->graphemes[i];
+    if (i) return buf->graphemes[i - 1];
+    return max(0, pos - 1); /* newline before this physical line */
+}
+
+int BufGraphemeWidth(const textBuffer *buf, int pos, int indent)
+{
+    int end, width = 0, step;
+    if (buf->encoding != BUF_ENCODING_UTF8 ||
+            (unsigned char)BufGetCharacter(buf, pos) < 128)
+        width = BufCodepointWidth(buf, pos, indent);
+    end = BufNextGrapheme(buf, pos);
+    for (; pos < end; pos = BufNextCharacter(buf, pos)) {
+        step = BufCodepointWidth(buf, pos, indent);
+        if (step > width) width = step;
+    }
+    return width;
 }
 
 /*
@@ -515,6 +618,7 @@ void BufCopyFromBuf(textBuffer *fromBuf, textBuffer *toBuf, int fromStart,
     }
     toBuf->gapStart += length;
     toBuf->length += length;
+    toBuf->revision++;
     updateSelections(toBuf, toPos, 0, length);
 } 
 
@@ -566,7 +670,7 @@ void BufOverlayRect(textBuffer *buf, int startPos, int rectStart,
     nLines = countLines(text);
     lineStartPos = BufStartOfLine(buf, startPos);
     if(rectEnd == -1)
-        rectEnd = rectStart + textWidth(text, buf->tabDist, buf->nullSubsChar);
+        rectEnd = rectStart + textWidth(text, buf->tabDist, buf->nullSubsChar, buf->encoding);
     lineStartPos = BufStartOfLine(buf, startPos);
     nDeleted = BufEndOfLine(buf, BufCountForwardNLines(buf, startPos, nLines)) -
     	    lineStartPos;
@@ -700,7 +804,7 @@ char *BufGetTextInRect(textBuffer *buf, int start, int end,
    
     start = BufStartOfLine(buf, start);
     end = BufEndOfLine(buf, end);
-    textOut = (char*)NEditMalloc((end - start) + 1);
+    textOut = (char*)NEditMalloc((end - start) + 2);
     lineStart = start;
     outPtr = textOut;
     while (lineStart <= end) {
@@ -721,7 +825,7 @@ char *BufGetTextInRect(textBuffer *buf, int start, int end,
     /* If necessary, realign the tabs in the selection as if the text were
        positioned at the left margin */
     retabbedStr = realignTabs(textOut, rectStart, 0, buf->tabDist,
-    	    buf->useTabs, buf->nullSubsChar, &len);
+            buf->useTabs, buf->nullSubsChar, &len, buf->encoding);
     NEditFree(textOut);
     return retabbedStr;
 }
@@ -767,8 +871,8 @@ void BufSelect(textBuffer *buf, int start, int end)
 
     if (buf->encoding == BUF_ENCODING_UTF8) {
         int first = min(start, end), last = max(start, end);
-        start = BufStartOfCharacter(buf, first);
-        end = first == last ? start : BufEndOfCharacter(buf, last);
+        start = BufStartOfGrapheme(buf, first);
+        end = first == last ? start : BufEndOfGrapheme(buf, last);
     }
     setSelection(&buf->primary, start, end);
     redisplaySelection(buf, &oldSelection, &buf->primary);
@@ -828,8 +932,8 @@ void BufSecondarySelect(textBuffer *buf, int start, int end)
 
     if (buf->encoding == BUF_ENCODING_UTF8) {
         int first = min(start, end), last = max(start, end);
-        start = BufStartOfCharacter(buf, first);
-        end = first == last ? start : BufEndOfCharacter(buf, last);
+        start = BufStartOfGrapheme(buf, first);
+        end = first == last ? start : BufEndOfGrapheme(buf, last);
     }
     setSelection(&buf->secondary, start, end);
     redisplaySelection(buf, &oldSelection, &buf->secondary);
@@ -879,6 +983,11 @@ void BufHighlight(textBuffer *buf, int start, int end)
 {
     selection oldSelection = buf->highlight;
 
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        int first = min(start, end), last = max(start, end);
+        start = BufStartOfGrapheme(buf, first);
+        end = first == last ? start : BufEndOfGrapheme(buf, last);
+    }
     setSelection(&buf->highlight, start, end);
     redisplaySelection(buf, &oldSelection, &buf->highlight);
 }
@@ -1213,11 +1322,11 @@ int BufCountDispChars(const textBuffer* buf, int lineStartPos,
 {
     int pos, charCount = 0;
 
-    pos = BufStartOfCharacter(buf, lineStartPos);
-    targetPos = BufStartOfCharacter(buf, targetPos);
+    pos = BufStartOfGrapheme(buf, lineStartPos);
+    targetPos = BufStartOfGrapheme(buf, targetPos);
     while (pos < targetPos && pos < buf->length) {
-        charCount += BufCodepointWidth(buf, pos, charCount);
-        pos = BufNextCharacter(buf, pos);
+        charCount += BufGraphemeWidth(buf, pos, charCount);
+        pos = BufNextGrapheme(buf, pos);
     }
     return charCount;
 }
@@ -1232,13 +1341,13 @@ int BufCountForwardDispChars(textBuffer *buf, int lineStartPos, int nChars)
     int pos, charCount = 0;
     char c;
     
-    pos = BufStartOfCharacter(buf, lineStartPos);
+    pos = BufStartOfGrapheme(buf, lineStartPos);
     while (charCount < nChars && pos < buf->length) {
     	c = BufGetCharacter(buf, pos);
     	if (c == '\n')
     	    return pos;
-        charCount += BufCodepointWidth(buf, pos, charCount);
-        pos = BufNextCharacter(buf, pos);
+        charCount += BufGraphemeWidth(buf, pos, charCount);
+        pos = BufNextGrapheme(buf, pos);
     }
     return pos;
 }
@@ -1447,6 +1556,7 @@ int BufSubstituteNullChars(char *string, int length, textBuffer *buf)
         /* bufString points to the buffer's data, so we substitute in situ */
         subsChars(bufString, buf->length, buf->nullSubsChar, newSubsChar);
         buf->nullSubsChar = newSubsChar;
+        buf->revision++;
     }
 
     /* If the string contains null characters, substitute them with the
@@ -1582,6 +1692,7 @@ static int insert(textBuffer *buf, int pos, const char *text)
     memcpy(&buf->buf[pos], text, length);
     buf->gapStart += length;
     buf->length += length;
+    if (length) buf->revision++;
     updateSelections(buf, pos, 0, length);
     
     return length;
@@ -1606,6 +1717,7 @@ static void delete(textBuffer *buf, int start, int end)
     
     /* update the length */
     buf->length -= end - start;
+    if (end > start) buf->revision++;
     
     /* fix up any selections which might be affected by the change */
     updateSelections(buf, start, end-start, 0);
@@ -1643,15 +1755,15 @@ static void insertCol(textBuffer *buf, int column, int startPos,
        is counted with the length of insText) */
     start = BufStartOfLine(buf, startPos);
     nLines = countLines(insText) + 1;
-    insWidth = textWidth(insText, buf->tabDist, buf->nullSubsChar);
+    insWidth = textWidth(insText, buf->tabDist, buf->nullSubsChar, buf->encoding);
     end = BufEndOfLine(buf, BufCountForwardNLines(buf, start, nLines-1));
     replText = BufGetRange(buf, start, end);
     expText = expandTabs(replText, 0, buf->tabDist, buf->nullSubsChar,
-	    &expReplLen);
+            &expReplLen, buf->encoding);
     NEditFree(replText);
     NEditFree(expText);
     expText = expandTabs(insText, 0, buf->tabDist, buf->nullSubsChar,
-	    &expInsLen);
+            &expInsLen, buf->encoding);
     NEditFree(expText);
     outStr = (char*) NEditMalloc(expReplLen + expInsLen +
     	    nLines * (column + insWidth + MAX_EXP_CHAR_LEN) + 1);
@@ -1667,7 +1779,7 @@ static void insertCol(textBuffer *buf, int column, int startPos,
     	insLine = copyLine(insPtr, &len);
     	insPtr += len;
     	insertColInLine(line, insLine, column, insWidth, buf->tabDist,
-    		buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset);
+                buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset, buf->encoding);
     	NEditFree(line);
     	NEditFree(insLine);
 #if 0   /* Earlier comments claimed that trailing whitespace could multiply on
@@ -1722,7 +1834,7 @@ static void deleteRect(textBuffer *buf, int start, int end, int rectStart,
     end = BufEndOfLine(buf, end);
     nLines = BufCountLines(buf, start, end) + 1;
     text = BufGetRange(buf, start, end);
-    expText = expandTabs(text, 0, buf->tabDist, buf->nullSubsChar, &len);
+    expText = expandTabs(text, 0, buf->tabDist, buf->nullSubsChar, &len, buf->encoding);
     NEditFree(text);
     NEditFree(expText);
     outStr = (char*)NEditMalloc(len + nLines * MAX_EXP_CHAR_LEN * 2 + 1);
@@ -1735,7 +1847,7 @@ static void deleteRect(textBuffer *buf, int start, int end, int rectStart,
     	lineEnd = BufEndOfLine(buf, lineStart);
     	line = BufGetRange(buf, lineStart, lineEnd);
     	deleteRectFromLine(line, rectStart, rectEnd, buf->tabDist,
-    		buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset);
+                buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset, buf->encoding);
     	NEditFree(line);
 	outPtr += len;
 	*outPtr++ = '\n';
@@ -1782,7 +1894,7 @@ static void overlayRect(textBuffer *buf, int startPos, int rectStart,
     nLines = countLines(insText) + 1;
     end = BufEndOfLine(buf, BufCountForwardNLines(buf, start, nLines-1));
     expText = expandTabs(insText, 0, buf->tabDist, buf->nullSubsChar,
-	    &expInsLen);
+            &expInsLen, buf->encoding);
     NEditFree(expText);
     outStr = (char*)NEditMalloc(end-start + expInsLen +
     	    nLines * (rectEnd + MAX_EXP_CHAR_LEN) + 1);
@@ -1800,7 +1912,7 @@ static void overlayRect(textBuffer *buf, int startPos, int rectStart,
     	insLine = copyLine(insPtr, &len);
     	insPtr += len;
     	overlayRectInLine(line, insLine, rectStart, rectEnd, buf->tabDist,
-		buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset);
+                buf->useTabs, buf->nullSubsChar, outPtr, &len, &endOffset, buf->encoding);
     	NEditFree(line);
     	NEditFree(insLine);
     	for (c=outPtr+len-1; c>outPtr && (*c == ' ' || *c == '\t'); c--)
@@ -1833,9 +1945,26 @@ static void overlayRect(textBuffer *buf, int startPos, int rectStart,
 ** the right edge of the inserted text (as a hint for routines which need
 ** to position the cursor).
 */
+static int streamLength(const char *text, enum bufEncoding encoding)
+{
+    return encoding == BUF_ENCODING_UTF8 ? Utf8NextGraphemeZ(text, NULL) : 1;
+}
+
+static int streamWidth(const char *text, int indent, int tabDist,
+        char nullSubsChar, enum bufEncoding encoding)
+{
+    int columns;
+    if (encoding != BUF_ENCODING_UTF8)
+        return BufCharWidth(*text, indent, tabDist, nullSubsChar);
+    Utf8NextGraphemeZ(text, &columns);
+    if ((unsigned char)*text < 128)
+        return max(columns, BufCharWidth(*text, indent, tabDist, nullSubsChar));
+    return columns;
+}
+
 static void insertColInLine(const char *line, const char *insLine,
         int column, int insWidth, int tabDist, int useTabs, char nullSubsChar,
-	char *outStr, int *outLen, int *endOffset)
+        char *outStr, int *outLen, int *endOffset, enum bufEncoding encoding)
 {
     char *c, *outPtr, *retabbedStr;
     const char *linePtr;
@@ -1844,12 +1973,13 @@ static void insertColInLine(const char *line, const char *insLine,
     /* copy the line up to "column" */ 
     outPtr = outStr;
     indent = 0;
-    for (linePtr=line; *linePtr!='\0'; linePtr++) {
-	len = BufCharWidth(*linePtr, indent, tabDist, nullSubsChar);
+    for (linePtr=line; *linePtr!='\0'; linePtr += streamLength(linePtr, encoding)) {
+        len = streamWidth(linePtr, indent, tabDist, nullSubsChar, encoding);
 	if (indent + len > column)
     	    break;
     	indent += len;
-	*outPtr++ = *linePtr;
+        memcpy(outPtr, linePtr, streamLength(linePtr, encoding));
+        outPtr += streamLength(linePtr, encoding);
     }
     
     /* If "column" falls in the middle of a character, and the character is a
@@ -1861,7 +1991,10 @@ static void insertColInLine(const char *line, const char *insLine,
     	if (*linePtr == '\t')
     	    linePtr++;
     	else {
-    	    *outPtr++ = *linePtr++;
+            int bytes = streamLength(linePtr, encoding);
+            memcpy(outPtr, linePtr, bytes);
+            outPtr += bytes;
+            linePtr += bytes;
     	    indent += len;
     	}
     } else
@@ -1884,10 +2017,11 @@ static void insertColInLine(const char *line, const char *insLine,
        the inserted string began at column 0 to its new column destination */
     if (*insLine != '\0') {
 	retabbedStr = realignTabs(insLine, 0, indent, tabDist, useTabs,
-		nullSubsChar, &len);
-	for (c=retabbedStr; *c!='\0'; c++) {
-    	    *outPtr++ = *c;
-    	    len = BufCharWidth(*c, indent, tabDist, nullSubsChar);
+                nullSubsChar, &len, encoding);
+        for (c=retabbedStr; *c!='\0'; c += streamLength(c, encoding)) {
+            memcpy(outPtr, c, streamLength(c, encoding));
+            outPtr += streamLength(c, encoding);
+            len = streamWidth(c, indent, tabDist, nullSubsChar, encoding);
     	    indent += len;
 	}
 	NEditFree(retabbedStr);
@@ -1908,7 +2042,7 @@ static void insertColInLine(const char *line, const char *insLine,
     
     /* realign tabs for text beyond "column" and write it out */
     retabbedStr = realignTabs(linePtr, postColIndent, indent, tabDist,
-    	useTabs, nullSubsChar, &len);
+        useTabs, nullSubsChar, &len, encoding);
     strcpy(outPtr, retabbedStr);
     NEditFree(retabbedStr);
     *endOffset = outPtr - outStr;
@@ -1926,7 +2060,7 @@ static void insertColInLine(const char *line, const char *insLine,
 */
 static void deleteRectFromLine(const char *line, int rectStart, int rectEnd,
 	int tabDist, int useTabs, char nullSubsChar, char *outStr, int *outLen,
-	int *endOffset)
+        int *endOffset, enum bufEncoding encoding)
 {
     int indent, preRectIndent, postRectIndent, len;
     const char *c;
@@ -1936,20 +2070,21 @@ static void deleteRectFromLine(const char *line, int rectStart, int rectEnd,
     /* copy the line up to rectStart */
     outPtr = outStr;
     indent = 0;
-    for (c=line; *c!='\0'; c++) {
+    for (c=line; *c!='\0'; c += streamLength(c, encoding)) {
 	if (indent > rectStart)
 	    break;
-	len = BufCharWidth(*c, indent, tabDist, nullSubsChar);
+        len = streamWidth(c, indent, tabDist, nullSubsChar, encoding);
 	if (indent + len > rectStart && (indent == rectStart || *c == '\t'))
     	    break;
     	indent += len;
-	*outPtr++ = *c;
+        memcpy(outPtr, c, streamLength(c, encoding));
+        outPtr += streamLength(c, encoding);
     }
     preRectIndent = indent;
     
     /* skip the characters between rectStart and rectEnd */
-    for(; *c!='\0' && indent<rectEnd; c++)
-	indent += BufCharWidth(*c, indent, tabDist, nullSubsChar);
+    for(; *c!='\0' && indent<rectEnd; c += streamLength(c, encoding))
+        indent += streamWidth(c, indent, tabDist, nullSubsChar, encoding);
     postRectIndent = indent;
     
     /* If the line ended before rectEnd, there's nothing more to do */
@@ -1970,7 +2105,7 @@ static void deleteRectFromLine(const char *line, int rectStart, int rectEnd,
        the position of non-whitespace characters by converting tabs to
        spaces, then back to tabs with the correct offset */
     retabbedStr = realignTabs(c, postRectIndent, indent, tabDist, useTabs,
-    	    nullSubsChar, &len);
+            nullSubsChar, &len, encoding);
     strcpy(outPtr, retabbedStr);
     NEditFree(retabbedStr);
     *endOffset = outPtr - outStr;
@@ -1989,7 +2124,7 @@ static void deleteRectFromLine(const char *line, int rectStart, int rectEnd,
 */
 static void overlayRectInLine(const char *line, const char *insLine,
         int rectStart, int rectEnd, int tabDist, int useTabs,
-	char nullSubsChar, char *outStr, int *outLen, int *endOffset)
+        char nullSubsChar, char *outStr, int *outLen, int *endOffset, enum bufEncoding encoding)
 {
     char *c, *outPtr, *retabbedStr;
     const char *linePtr;
@@ -1999,13 +2134,14 @@ static void overlayRectInLine(const char *line, const char *insLine,
         contains it*/ 
     outPtr = outStr;
     inIndent = outIndent = 0;
-    for (linePtr=line; *linePtr!='\0'; linePtr++) {
-	len = BufCharWidth(*linePtr, inIndent, tabDist, nullSubsChar);
+    for (linePtr=line; *linePtr!='\0'; linePtr += streamLength(linePtr, encoding)) {
+        len = streamWidth(linePtr, inIndent, tabDist, nullSubsChar, encoding);
 	if (inIndent + len > rectStart)
     	    break;
     	inIndent += len;
     	outIndent += len;
-	*outPtr++ = *linePtr;
+        memcpy(outPtr, linePtr, streamLength(linePtr, encoding));
+        outPtr += streamLength(linePtr, encoding);
     }
     
     /* If "rectStart" falls in the middle of a character, and the character
@@ -2018,15 +2154,18 @@ static void overlayRectInLine(const char *line, const char *insLine,
     	    linePtr++;
     	    inIndent += len;
     	} else {
-    	    *outPtr++ = *linePtr++;
+            int bytes = streamLength(linePtr, encoding);
+            memcpy(outPtr, linePtr, bytes);
+            outPtr += bytes;
+            linePtr += bytes;
     	    outIndent += len;
     	    inIndent += len;
     	}
     }
     
     /* skip the characters between rectStart and rectEnd */
-    for(; *linePtr!='\0' && inIndent < rectEnd; linePtr++)
-	inIndent += BufCharWidth(*linePtr, inIndent, tabDist, nullSubsChar);
+    for(; *linePtr!='\0' && inIndent < rectEnd; linePtr += streamLength(linePtr, encoding))
+        inIndent += streamWidth(linePtr, inIndent, tabDist, nullSubsChar, encoding);
     postRectIndent = inIndent;
     
     /* After this inIndent is dead and linePtr is supposed to point at the
@@ -2046,16 +2185,17 @@ static void overlayRectInLine(const char *line, const char *insLine,
 		&len);
 	outPtr += len;
     }
-    outIndent = rectStart;
+    outIndent = max(outIndent, rectStart);
     
     /* Copy the text from "insLine" (if any), recalculating the tabs as if
        the inserted string began at column 0 to its new column destination */
     if (*insLine != '\0') {
-	retabbedStr = realignTabs(insLine, 0, rectStart, tabDist, useTabs,
-		nullSubsChar, &len);
-	for (c=retabbedStr; *c!='\0'; c++) {
-    	    *outPtr++ = *c;
-    	    len = BufCharWidth(*c, outIndent, tabDist, nullSubsChar);
+	retabbedStr = realignTabs(insLine, 0, outIndent, tabDist, useTabs,
+                nullSubsChar, &len, encoding);
+        for (c=retabbedStr; *c!='\0'; c += streamLength(c, encoding)) {
+            memcpy(outPtr, c, streamLength(c, encoding));
+            outPtr += streamLength(c, encoding);
+            len = streamWidth(c, outIndent, tabDist, nullSubsChar, encoding);
     	    outIndent += len;
 	}
 	NEditFree(retabbedStr);
@@ -2478,18 +2618,18 @@ static int countLines(const char *string)
 /*
 ** Measure the width in displayed characters of string "text"
 */
-static int textWidth(const char *text, int tabDist, char nullSubsChar)
+static int textWidth(const char *text, int tabDist, char nullSubsChar, enum bufEncoding encoding)
 {
     int width = 0, maxWidth = 0;
     const char *c;
     
-    for (c=text; *c!='\0'; c++) {
+    for (c=text; *c!='\0'; c += streamLength(c, encoding)) {
     	if (*c == '\n') {
     	    if (width > maxWidth)
     	    	maxWidth = width;
     	    width = 0;
     	} else
-    	    width += BufCharWidth(*c, width, tabDist, nullSubsChar);
+            width += streamWidth(c, width, tabDist, nullSubsChar, encoding);
     }
     if (width > maxWidth)
     	return width;
@@ -2517,14 +2657,14 @@ static void findRectSelBoundariesForCopy(textBuffer *buf, int lineStartPos,
     char c;
     
     /* find the start of the selection */
-    for (pos=lineStartPos; pos<buf->length; pos++) {
+    for (pos=lineStartPos; pos<buf->length; pos = BufNextGrapheme(buf, pos)) {
     	c = BufGetCharacter(buf, pos);
     	if (c == '\n')
     	    break;
-    	width = BufCharWidth(c, indent, buf->tabDist, buf->nullSubsChar);
+        width = BufGraphemeWidth(buf, pos, indent);
     	if (indent + width > rectStart) {
     	    if (indent != rectStart && c != '\t') {
-    	    	pos++;
+                pos = BufNextGrapheme(buf, pos);
     	    	indent += width;
     	    }
     	    break;
@@ -2534,15 +2674,15 @@ static void findRectSelBoundariesForCopy(textBuffer *buf, int lineStartPos,
     *selStart = pos;
     
     /* find the end */
-    for (; pos<buf->length; pos++) {
+    for (; pos<buf->length; pos = BufNextGrapheme(buf, pos)) {
     	c = BufGetCharacter(buf, pos);
     	if (c == '\n')
     	    break;
-    	width = BufCharWidth(c, indent, buf->tabDist, buf->nullSubsChar);
+        width = BufGraphemeWidth(buf, pos, indent);
     	indent += width;
     	if (indent > rectEnd) {
     	    if (indent-width != rectEnd && c != '\t')
-    	    	pos++;
+                pos = BufNextGrapheme(buf, pos);
     	    break;
     	}
     }
@@ -2556,7 +2696,7 @@ static void findRectSelBoundariesForCopy(textBuffer *buf, int lineStartPos,
 ** which must be freed by the caller with NEditFree.
 */
 static char *realignTabs(const char *text, int origIndent, int newIndent,
-	int tabDist, int useTabs, char nullSubsChar, int *newLength)
+        int tabDist, int useTabs, char nullSubsChar, int *newLength, enum bufEncoding encoding)
 {
     char *expStr, *outStr;
     int len;
@@ -2572,12 +2712,12 @@ static char *realignTabs(const char *text, int origIndent, int newIndent,
     
     /* If the tab settings are not the same, brutally convert tabs to
        spaces, then back to tabs in the new position */
-    expStr = expandTabs(text, origIndent, tabDist, nullSubsChar, &len);
+    expStr = expandTabs(text, origIndent, tabDist, nullSubsChar, &len, encoding);
     if (!useTabs) {
     	*newLength = len;
     	return expStr;
     }
-    outStr = unexpandTabs(expStr, newIndent, tabDist, nullSubsChar, newLength);
+    outStr = unexpandTabs(expStr, newIndent, tabDist, nullSubsChar, newLength, encoding);
     NEditFree(expStr);
     return outStr;
 }    
@@ -2588,7 +2728,7 @@ static char *realignTabs(const char *text, int origIndent, int newIndent,
 ** beginning at column "startIndent"
 */
 static char *expandTabs(const char *text, int startIndent, int tabDist,
-	char nullSubsChar, int *newLen)
+        char nullSubsChar, int *newLen, enum bufEncoding encoding)
 {
     char *outStr, *outPtr;
     const char *c;
@@ -2596,17 +2736,17 @@ static char *expandTabs(const char *text, int startIndent, int tabDist,
 
     /* rehearse the expansion to figure out length for output string */
     indent = startIndent;
-    for (c=text; *c!='\0'; c++) {
+    for (c=text; *c!='\0'; c += streamLength(c, encoding)) {
     	if (*c == '\t') {
-    	    len = BufCharWidth(*c, indent, tabDist, nullSubsChar);
+            len = streamWidth(c, indent, tabDist, nullSubsChar, encoding);
     	    outLen += len;
     	    indent += len;
     	} else if (*c == '\n') {
     	    indent = startIndent;
-    	    outLen++;
+            outLen += streamLength(c, encoding);
     	} else {
-    	    indent += BufCharWidth(*c, indent, tabDist, nullSubsChar);
-    	    outLen++;
+            indent += streamWidth(c, indent, tabDist, nullSubsChar, encoding);
+            outLen += streamLength(c, encoding);
     	}
     }
     
@@ -2614,17 +2754,20 @@ static char *expandTabs(const char *text, int startIndent, int tabDist,
     outStr = (char*)NEditMalloc(outLen+1);
     outPtr = outStr;
     indent = startIndent;
-    for (c=text; *c!= '\0'; c++) {
+    for (c=text; *c!= '\0'; c += streamLength(c, encoding)) {
     	if (*c == '\t') {
-    	    len = BufExpandCharacter(*c, indent, outPtr, tabDist, nullSubsChar);
+            len = BufCharWidth(*c, indent, tabDist, nullSubsChar);
+            memset(outPtr, ' ', len);
     	    outPtr += len;
     	    indent += len;
     	} else if (*c == '\n') {
     	    indent = startIndent;
-    	    *outPtr++ = *c;
+            memcpy(outPtr, c, streamLength(c, encoding));
+            outPtr += streamLength(c, encoding);
     	} else {
-    	    indent += BufCharWidth(*c, indent, tabDist, nullSubsChar);
-    	    *outPtr++ = *c;
+            indent += streamWidth(c, indent, tabDist, nullSubsChar, encoding);
+            memcpy(outPtr, c, streamLength(c, encoding));
+            outPtr += streamLength(c, encoding);
     	}
     }
     outStr[outLen] = '\0';
@@ -2638,9 +2781,9 @@ static char *expandTabs(const char *text, int startIndent, int tabDist,
 ** converting double spaces after a period withing a block of text.
 */
 static char *unexpandTabs(const char *text, int startIndent, int tabDist,
-	char nullSubsChar, int *newLen)
+        char nullSubsChar, int *newLen, enum bufEncoding encoding)
 {
-    char *outStr, *outPtr, expandedChar[MAX_EXP_CHAR_LEN];
+    char *outStr, *outPtr;
     const char *c;
     int indent, len;
     
@@ -2649,9 +2792,10 @@ static char *unexpandTabs(const char *text, int startIndent, int tabDist,
     indent = startIndent;
     for (c=text; *c!='\0';) {
     	if (*c == ' ') {
-    	    len = BufExpandCharacter('\t', indent, expandedChar, tabDist,
-		    nullSubsChar);
-    	    if (len >= 3 && !strncmp(c, expandedChar, len)) {
+            size_t spaces = strspn(c, " ");
+            len = BufCharWidth('\t', indent, tabDist, nullSubsChar);
+            if (len >= 3 && spaces >= (size_t)len &&
+                    (spaces > (size_t)len || streamLength(c + len - 1, encoding) == 1)) {
     	    	c += len;
     	    	*outPtr++ = '\t';
     	    	indent += len;
@@ -2663,9 +2807,10 @@ static char *unexpandTabs(const char *text, int startIndent, int tabDist,
     	    indent = startIndent;
     	    *outPtr++ = *c++;
     	} else {
-    	    *outPtr++ = *c++;
-    	    indent++;
-    	}
+            int bytes = streamLength(c, encoding);
+            indent += streamWidth(c, indent, tabDist, nullSubsChar, encoding);
+            memcpy(outPtr, c, bytes); outPtr += bytes; c += bytes;
+        }
     }
     *outPtr = '\0';
     *newLen = outPtr - outStr;

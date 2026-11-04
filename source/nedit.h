@@ -349,6 +349,7 @@ typedef struct _WindowInfo {
     Widget	showTipItem;
     Widget	autoIndentOffItem;
     Widget	autoIndentItem;
+    Widget utf8Item, utf8DefItem;
     Widget	smartIndentItem;
     Widget  	noWrapItem;
     Widget  	newlineWrapItem;

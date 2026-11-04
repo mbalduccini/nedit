@@ -48,6 +48,8 @@ int GetSimpleSelection(textBuffer *buf, int *left, int *right);
 WindowInfo *FindWindowWithFile(const char *name, const char *path);
 void SetAutoIndent(WindowInfo *window, IndentStyle state);
 void SetShowMatching(WindowInfo *window, ShowMatchingStyle state);
+void SetDocumentEncoding(WindowInfo *window, int utf8);
+void SetUtf8Font(WindowInfo *window, const char *name);
 void SetFonts(WindowInfo *window, const char *fontName, const char *italicName,
 	const char *boldName, const char *boldItalicName);
 void SetColors(WindowInfo *window, const char *textFg, const char *textBg,  

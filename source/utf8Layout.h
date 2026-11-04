@@ -1,5 +1,5 @@
-/* A scalar-based line map shared by drawing, hit testing, and wrapping.
-   Offsets are bytes, columns are logical scalar/tab/control columns, and
+/* A grapheme-based line map shared by drawing, hit testing, and wrapping.
+   Offsets are bytes; columns use Unicode grapheme widths and tab/control expansion;
    advances are pixels supplied by the renderer. No shaping is performed. */
 #ifndef NEDIT_UTF8_LAYOUT_H_INCLUDED
 #define NEDIT_UTF8_LAYOUT_H_INCLUDED
@@ -14,12 +14,14 @@ typedef struct {
     int columnStart, columnEnd;
     int xStart, xEnd;
     int renderLength;
-    char renderText[MAX_EXP_CHAR_LEN];
+    char *renderText;
 } utf8LayoutCell;
 
 typedef struct {
     int nCells, byteLength, columns, width;
     utf8LayoutCell *cells;
+    char *renderStorage;
+    int references;
 } utf8LineLayout;
 
 /* The input is a single display line, without a newline. Invalid bytes render
@@ -28,6 +30,7 @@ typedef struct {
 utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
         char nullSubsChar, utf8MeasureProc measure, void *arg);
 void Utf8LayoutFree(utf8LineLayout *layout);
+void Utf8LayoutRetain(utf8LineLayout *layout);
 int Utf8LayoutByteToX(const utf8LineLayout *layout, int pos);
 int Utf8LayoutXToByte(const utf8LineLayout *layout, int x, int nearestCursor);
 

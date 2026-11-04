@@ -13,7 +13,7 @@ nedit [B<-read>] [B<-create>] [B<-line> I<n> | B<+>I<n>] [B<-server>]
       [B<-autoindent>] [B<-noautoindent>] 
       [B<-autosave>] [B<-noautosave>] 
       [B<-lm> I<languagemode>] [B<-rows> n] [B<-columns> I<n>] 
-      [B<-font> I<font>] 
+      [B<-font> I<font>] [B<-utf8> | B<-8bit>] [B<-utf8font> I<font>]
       [B<-geometry>|B<-g> I<geometry>] [B<-iconic>] [B<-noiconic>] 
       [B<-display> I<[host]:server[.screen]>] 
       [B<-xrm> I<resourcestring>]
@@ -103,6 +103,24 @@ Default width in characters for an editing window.
 
 Font for text being edited. Font for menus and dialogs can be set with B<-xrm>
 I<"*fontList:font">.
+
+=item B<-utf8>, B<-8bit>
+
+Interpret documents as UTF-8 or legacy single-byte text. The default is legacy
+mode. UTF-8 mode uses Xft/Fontconfig and utf8proc on Linux; file bytes and undo
+positions are retained. Preferences > UTF-8 Document changes the current
+interpretation; Default Settings > UTF-8 by Default sets new-document policy.
+Cursor movement, deletion, selection and column edits preserve whole graphemes.
+Unicode search, clipboard protocols, shaping and bidirectional layout are
+separate follow-on features. Use a UTF-8 locale for typed text.
+
+=item B<-utf8font> I<fontconfig-name>
+
+Set the UTF-8 document font, for example C<monospace:size=12>. Preferences >
+UTF-8 Font lists installed families and accepts Fontconfig family/size names.
+The corresponding default preferences are C<nedit.utf8> and C<nedit.utf8Font>.
+Use C<-svrname ''> to keep a test instance standalone if resources normally
+enable server mode.
 
 =item  B<-geometry> I<geometry>, B<-g> I<geometry> 
 

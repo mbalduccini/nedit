@@ -1,3 +1,13 @@
+2026-11-04  classic-UTF-8
+
+        * Linux UTF-8 phase 1: utf8proc grapheme boundaries and Unicode columns;
+          safe rectangle/column edits, shifting, fill and block drags; cached
+          Xft line maps and visible-cell redraw; document/default encoding and
+          Fontconfig font controls; Motif commit/overflow and cursor spot support.
+          Add file/backup/CRLF/include, input, editing, performance and sanitizer
+          checks. Search, clipboard, macro Unicode APIs and complex-script layout
+          remain follow-on work. See doc/UTF8-PLAN.md.
+
 2007-07-02 21:53  ajbj
 
 	* source/window.c (1.199): A couple of small mistakes caught by

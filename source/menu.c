@@ -126,6 +126,12 @@ static void newlineWrapCB(Widget w, WindowInfo *window, caddr_t callData);
 static void noWrapCB(Widget w, WindowInfo *window, caddr_t callData);
 static void continuousWrapCB(Widget w, WindowInfo *window, caddr_t callData);
 static void wrapMarginCB(Widget w, WindowInfo *window, caddr_t callData);
+static void utf8CB(Widget w, WindowInfo *window, caddr_t callData);
+static void utf8DefCB(Widget w, WindowInfo *window, caddr_t callData);
+static void utf8FontCB(Widget w, WindowInfo *window, caddr_t callData);
+static void utf8FontDefCB(Widget w, WindowInfo *window, caddr_t callData);
+static void setEncodingAP(Widget w, XEvent *event, String *args, Cardinal *nArgs);
+static void setUtf8FontAP(Widget w, XEvent *event, String *args, Cardinal *nArgs);
 static void fontCB(Widget w, WindowInfo *window, caddr_t callData);
 static void tabsCB(Widget w, WindowInfo *window, caddr_t callData);
 static void backlightCharsCB(Widget w, WindowInfo *window, caddr_t callData);
@@ -584,6 +590,8 @@ static XtActionsRec Actions[] = {
     {"set_em_tab_dist", setEmTabDistAP},
     {"set_use_tabs", setUseTabsAP},
     {"set_fonts", setFontsAP},
+    {"set_encoding", setEncodingAP},
+    {"set_utf8_font", setUtf8FontAP},
     {"set_language_mode", setLanguageModeAP}
 };
 
@@ -871,6 +879,9 @@ Widget CreateMenuBar(Widget parent, WindowInfo *window)
             window, SHORT);
     createMenuItem(subPane, "tabDistance", "Tab Stops...", 'T', tabsDefCB, window,
     	    SHORT);
+    window->utf8DefItem = createMenuToggle(subPane, "utf8", "UTF-8 by Default", '8',
+            utf8DefCB, window, GetPrefUtf8(), FULL);
+    createMenuItem(subPane, "utf8Font", "UTF-8 Font...", 'U', utf8FontDefCB, window, FULL);
     createMenuItem(subPane, "textFont", "Text Fonts...", 'F', fontDefCB, window,
     	    FULL);
     createMenuItem(subPane, "colors", "Colors...", 'C', colorDefCB, window,
@@ -1108,6 +1119,13 @@ Widget CreateMenuBar(Widget parent, WindowInfo *window)
     createMenuItem(subPane, "wrapMargin", "Wrap Margin...", 'W',
     	    wrapMarginCB, window, SHORT);
     createMenuItem(menuPane, "tabs", "Tab Stops...", 'T', tabsCB, window, SHORT);
+    window->utf8Item = createMenuToggle(menuPane, "utf8", "UTF-8 Document", '8',
+            utf8CB, window, GetPrefUtf8(), FULL);
+    createMenuItem(menuPane, "utf8Font", "UTF-8 Font...", 'U', utf8FontCB, window, FULL);
+#ifndef HAVE_XFT
+    XtSetSensitive(window->utf8Item, False);
+    XtSetSensitive(window->utf8DefItem, False);
+#endif
     createMenuItem(menuPane, "textFont", "Text Fonts...", 'F', fontCB, window,
     	    FULL);
     window->highlightItem = createMenuToggle(menuPane, "highlightSyntax",
@@ -1685,6 +1703,38 @@ static void matchSyntaxBasedCB(Widget w, WindowInfo *window, caddr_t callData)
             ((XmAnyCallbackStruct *)callData)->event);
     XtCallActionProc(WidgetToWindow(menu)->lastFocus, "set_match_syntax_based",
     	    ((XmAnyCallbackStruct *)callData)->event, NULL, 0);
+}
+
+static void utf8CB(Widget w, WindowInfo *window, caddr_t callData)
+{
+    SetDocumentEncoding(WidgetToWindow(MENU_WIDGET(w)), XmToggleButtonGetState(w));
+}
+
+static void utf8DefCB(Widget w, WindowInfo *window, caddr_t callData)
+{
+    WindowInfo *win;
+    SetPrefUtf8(XmToggleButtonGetState(w));
+    for (win = WindowList; win; win = win->next)
+        if (IsTopDocument(win)) XmToggleButtonSetState(win->utf8DefItem, GetPrefUtf8(), False);
+}
+
+static void utf8FontCB(Widget w, WindowInfo *window, caddr_t callData)
+{ ChooseUtf8Font(WidgetToWindow(MENU_WIDGET(w)), True); }
+
+static void utf8FontDefCB(Widget w, WindowInfo *window, caddr_t callData)
+{ ChooseUtf8Font(WidgetToWindow(MENU_WIDGET(w)), False); }
+
+static void setEncodingAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
+{
+    if (*nArgs == 1 && (!strcmp(args[0], "utf8") || !strcmp(args[0], "8bit")))
+        SetDocumentEncoding(WidgetToWindow(w), !strcmp(args[0], "utf8"));
+    else fprintf(stderr, "nedit: set_encoding requires utf8 or 8bit\n");
+}
+
+static void setUtf8FontAP(Widget w, XEvent *event, String *args, Cardinal *nArgs)
+{
+    if (*nArgs == 1) SetUtf8Font(WidgetToWindow(w), args[0]);
+    else fprintf(stderr, "nedit: set_utf8_font requires a Fontconfig name\n");
 }
 
 static void fontCB(Widget w, WindowInfo *window, caddr_t callData)

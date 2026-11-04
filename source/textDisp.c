@@ -40,6 +40,9 @@
 #include "highlight.h"
 #include "rangeset.h"
 #include "utf8Layout.h"
+#ifndef NO_XMIM
+#include <Xm/XmIm.h>
+#endif
 #include "../util/nedit_malloc.h"
 
 #include <stdio.h>
@@ -216,21 +219,69 @@ static int measureUtf8Cell(const char *text, int length, int byteStart, void *ar
             utf8Face(ctx->textD, style));
 }
 
-static utf8LineLayout *utf8LineMap(const textDisp *textD, int start, int length)
+static void clearUtf8Maps(textDisp *textD)
 {
+    int i;
+    for (i = 0; i < 16; i++) {
+        Utf8LayoutFree(textD->utf8Maps[i].map);
+        textD->utf8Maps[i].map = NULL;
+    }
+}
+
+static utf8LineLayout *utf8LineMap(const textDisp *display, int start, int length)
+{
+    textDisp *textD = (textDisp *)display;
     utf8MeasureContext ctx;
     utf8LineLayout *map;
-    char *text = BufGetRange(textD->buffer, start, start + length);
+    textBuffer *buf = textD->buffer;
+    unsigned long styleRevision = textD->styleBuffer ? textD->styleBuffer->revision : 0;
+    char *text;
+    int i;
+    size_t cachedBytes = 0;
+    for (i = 0; i < 16; i++) {
+        if (textD->utf8Maps[i].map &&
+                (textD->utf8Maps[i].revision != buf->revision ||
+                 textD->utf8Maps[i].styleRevision != styleRevision)) {
+            Utf8LayoutFree(textD->utf8Maps[i].map);
+            textD->utf8Maps[i].map = NULL;
+        }
+        if (textD->utf8Maps[i].map) cachedBytes += textD->utf8Maps[i].length;
+        if (textD->utf8Maps[i].map && textD->utf8Maps[i].start == start &&
+                textD->utf8Maps[i].length == length &&
+                textD->utf8Maps[i].revision == buf->revision &&
+                textD->utf8Maps[i].styleRevision == styleRevision &&
+                textD->utf8Maps[i].tabDist == buf->tabDist &&
+                textD->utf8Maps[i].nullSubsChar == buf->nullSubsChar) {
+            Utf8LayoutRetain(textD->utf8Maps[i].map);
+            return textD->utf8Maps[i].map;
+        }
+    }
+    text = BufGetRange(buf, start, start + length);
     ctx.textD = textD; ctx.start = start;
-    map = Utf8LayoutCreate(text, length, textD->buffer->tabDist,
-            textD->buffer->nullSubsChar, measureUtf8Cell, &ctx);
+    map = Utf8LayoutCreate(text, length, buf->tabDist,
+            buf->nullSubsChar, measureUtf8Cell, &ctx);
     NEditFree(text);
+    if (map) {
+        if (cachedBytes + (size_t)length > 1024 * 1024) clearUtf8Maps(textD);
+        i = textD->nextUtf8Map++ % 16;
+        if (textD->nextUtf8Map == 16) textD->nextUtf8Map = 0;
+        Utf8LayoutFree(textD->utf8Maps[i].map);
+        textD->utf8Maps[i].map = map;
+        textD->utf8Maps[i].start = start;
+        textD->utf8Maps[i].length = length;
+        textD->utf8Maps[i].revision = buf->revision;
+        textD->utf8Maps[i].styleRevision = textD->styleBuffer ? textD->styleBuffer->revision : 0;
+        textD->utf8Maps[i].tabDist = buf->tabDist;
+        textD->utf8Maps[i].nullSubsChar = buf->nullSubsChar;
+        Utf8LayoutRetain(map);
+    }
     return map;
 }
 
 static void redisplayUtf8Line(textDisp *textD, int line)
 {
     int start = textD->lineStarts[line], length, i, x, y, style, offset;
+    int first, last, low, high, mid;
     int height = textD->ascent + textD->descent;
     utf8LineLayout *map;
     utf8LayoutCell *cell;
@@ -247,9 +298,24 @@ static void redisplayUtf8Line(textDisp *textD, int line)
     offset = textD->continuousWrap ? BufCountDispChars(textD->buffer,
             BufStartOfLine(textD->buffer, start), start) : 0;
     x = textD->left - textD->horizOffset;
-    /* Background first, then glyphs, so overhanging glyphs are not erased by
-       the following character's background. Redraw the whole visible row. */
-    for (i = 0; i < map->nCells; i++) {
+    /* Locate the viewport in the cached line map; moving the cursor on a
+       very long line must not scan or restyle every offscreen grapheme. */
+    low = 0; high = map->nCells;
+    while (low < high) {
+        mid = low + (high - low) / 2;
+        if (x + map->cells[mid].xEnd < textD->left) low = mid + 1;
+        else high = mid;
+    }
+    first = max(0, low - 1); /* glyphs may overhang their advance */
+    low = first; high = map->nCells;
+    while (low < high) {
+        mid = low + (high - low) / 2;
+        if (x + map->cells[mid].xStart < textD->left + textD->width) low = mid + 1;
+        else high = mid;
+    }
+    last = min(map->nCells, low + 1);
+    /* Paint backgrounds before glyphs to preserve overhanging ink. */
+    for (i = first; i < last; i++) {
         cell = &map->cells[i];
         style = styleOfPos(textD, start, length, cell->byteStart,
                 offset + cell->columnStart,
@@ -273,7 +339,7 @@ static void redisplayUtf8Line(textDisp *textD, int line)
             fillX += space;
         }
     }
-    for (i = 0; i < map->nCells; i++) {
+    for (i = first; i < last; i++) {
         cell = &map->cells[i];
         style = styleOfPos(textD, start, length, cell->byteStart,
                 offset + cell->columnStart,
@@ -334,6 +400,8 @@ textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
     textD->fontStruct = fontStruct;
     textD->utf8Font = NULL;
     textD->utf8FontName = NULL;
+    memset(textD->utf8Maps, 0, sizeof(textD->utf8Maps));
+    textD->nextUtf8Map = 0;
     textD->ascent = fontStruct->ascent;
     textD->descent = fontStruct->descent;
     textD->fixedFontWidth = fontStruct->min_bounds.width ==
@@ -425,6 +493,7 @@ textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
 */
 void TextDFree(textDisp *textD)
 {
+    clearUtf8Maps(textD);
     BufRemoveModifyCB(textD->buffer, bufModifiedCB, textD);
     BufRemovePreDeleteCB(textD->buffer, bufPreDeleteCB, textD);
     releaseGC(textD->w, textD->gc);
@@ -450,6 +519,7 @@ void TextDFree(textDisp *textD)
 */
 void TextDSetBuffer(textDisp *textD, textBuffer *buffer)
 {
+    clearUtf8Maps(textD);
     /* If the text display is already displaying a buffer, clear it off
        of the display and remove our callback from it */
     if (textD->buffer != NULL) {
@@ -546,6 +616,16 @@ void TextDSetColors(textDisp *textD, Pixel textFgP, Pixel textBgP,
 /*
 ** Change the (non highlight) font
 */
+void TextDRefreshEncoding(textDisp *textD)
+{
+    clearUtf8Maps(textD);
+    if (textD->buffer->encoding == BUF_ENCODING_UTF8 && !textD->utf8Font)
+        textD->utf8Font = Utf8FontOpen(textD->w, textD->utf8FontName);
+    textD->cursorPos = BufStartOfGrapheme(textD->buffer, textD->cursorPos);
+    TextDSetFont(textD, textD->fontStruct);
+    TextDSetWrapMode(textD, textD->continuousWrap, textD->wrapMargin);
+}
+
 void TextDSetUtf8Font(textDisp *textD, const char *name)
 {
     utf8Font *font;
@@ -575,6 +655,7 @@ void TextDSetFont(textDisp *textD, XFontStruct *fontStruct)
     XGCValues values;
     XFontStruct *styleFont;
     
+    clearUtf8Maps(textD);
     textD->cursorPreferredX = -1;
     textD->cursorPreferredCol = -1;
 
@@ -927,7 +1008,7 @@ void TextDGetScroll(textDisp *textD, int *topLineNum, int *horizOffset)
 */
 void TextDSetInsertPosition(textDisp *textD, int newPos)
 {
-    newPos = BufStartOfCharacter(textD->buffer, newPos);
+    newPos = BufStartOfGrapheme(textD->buffer, newPos);
     /* make sure new position is ok, do nothing if it hasn't changed */
     if (newPos == textD->cursorPos)
     	return;
@@ -1036,7 +1117,7 @@ void TextDOverstrike(textDisp *textD, char *text)
     textBuffer *buf = textD->buffer;
     int lineStart = BufStartOfLine(buf, startPos);
     int textLen = strlen(text);
-    int i, p, endPos, indent, startIndent, endIndent, byteLen;
+    int i, p, endPos, indent, startIndent, endIndent, byteLen, clusterColumns;
     char *c, ch, *paddedText = NULL;
     
     /* determine how many displayed character positions are covered */
@@ -1044,28 +1125,35 @@ void TextDOverstrike(textDisp *textD, char *text)
     indent = startIndent;
     for (c=text; c < text + textLen; c += byteLen) {
         byteLen = buf->encoding == BUF_ENCODING_UTF8
-                ? Utf8Decode(c, text + textLen - c, NULL, NULL) : 1;
+                ? Utf8NextGrapheme(c, text + textLen - c, &clusterColumns) : 1;
         indent += byteLen == 1
-                ? BufCharWidth(*c, indent, buf->tabDist, buf->nullSubsChar) : 1;
+                ? BufCharWidth(*c, indent, buf->tabDist, buf->nullSubsChar) : clusterColumns;
     }
     endIndent = indent;
+
+    /* A committed combining mark adds no columns. In overstrike mode it
+       must join the preceding base without erasing the following grapheme. */
+    if (buf->encoding == BUF_ENCODING_UTF8 && endIndent == startIndent) {
+        TextDInsert(textD, text);
+        return;
+    }
     
     /* find which characters to remove, and if necessary generate additional
        padding to make up for removed control characters at the end */
     indent=startIndent;
-    for (p=startPos; ; p = BufNextCharacter(buf, p)) {
+    for (p=startPos; ; p = BufNextGrapheme(buf, p)) {
     	if (p == buf->length)
     	    break;
     	ch = BufGetCharacter(buf, p);
     	if (ch == '\n')
     	    break;
-        indent += BufCodepointWidth(buf, p, indent);
+        indent += BufGraphemeWidth(buf, p, indent);
     	if (indent == endIndent) {
-            p = BufNextCharacter(buf, p);
+            p = BufNextGrapheme(buf, p);
     	    break;
     	} else if (indent > endIndent) {
     	    if (ch != '\t') {
-                p = BufNextCharacter(buf, p);
+                p = BufNextGrapheme(buf, p);
     	    	paddedText = (char*)NEditMalloc(textLen + MAX_EXP_CHAR_LEN + 1);
     	    	strcpy(paddedText, text);
     	    	for (i=0; i<indent-endIndent; i++)
@@ -1445,7 +1533,7 @@ int TextDMoveRight(textDisp *textD)
     if (textD->cursorPos >= textD->buffer->length)
     	return False;
     TextDSetInsertPosition(textD,
-            BufNextCharacter(textD->buffer, textD->cursorPos));
+            BufNextGrapheme(textD->buffer, textD->cursorPos));
     return True;
 }
 
@@ -1454,7 +1542,7 @@ int TextDMoveLeft(textDisp *textD)
     if (textD->cursorPos <= 0)
     	return False;
     TextDSetInsertPosition(textD,
-            BufPrevCharacter(textD->buffer, textD->cursorPos));
+            BufPrevGrapheme(textD->buffer, textD->cursorPos));
     return True;
 }
 
@@ -1728,6 +1816,7 @@ static void bufModifiedCB(int pos, int nInserted, int nDeleted,
     int oldFirstChar = textD->firstChar;
     int scrolled, origCursorPos = textD->cursorPos;
     int wrapModStart, wrapModEnd;
+    if (nRestyled) clearUtf8Maps(textD);
  
     /* buffer modification cancels vertical cursor motion column */
     if (nInserted != 0 || nDeleted != 0) {
@@ -1783,7 +1872,8 @@ static void bufModifiedCB(int pos, int nInserted, int nDeleted,
     
     /* Update the cursor position */
     if (textD->cursorToHint != NO_HINT) {
-    	textD->cursorPos = textD->cursorToHint;
+        /* Newly inserted text can join an existing combining sequence. */
+        textD->cursorPos = BufEndOfGrapheme(buf, textD->cursorToHint);
     	textD->cursorToHint = NO_HINT;
     } else if (textD->cursorPos > pos) {
     	if (textD->cursorPos < pos + nDeleted)
@@ -1792,7 +1882,7 @@ static void bufModifiedCB(int pos, int nInserted, int nDeleted,
     	    textD->cursorPos += nInserted - nDeleted;
     }
 
-    textD->cursorPos = BufStartOfCharacter(buf, textD->cursorPos);
+    textD->cursorPos = BufStartOfGrapheme(buf, textD->cursorPos);
 
     /* If the changes caused scrolling, re-paint everything and we're done. */
     if (scrolled) {
@@ -2347,7 +2437,7 @@ static void drawCursor(textDisp *textD, int x, int y)
     	return;
     
     if (utf8Active(textD)) {
-        int next = BufNextCharacter(textD->buffer, textD->cursorPos);
+        int next = BufNextGrapheme(textD->buffer, textD->cursorPos);
         int nx, ny;
         fontWidth = Utf8FontWidth(textD->utf8Font, " ", 1, 0);
         if (textD->cursorPos < textD->buffer->length &&
@@ -2403,6 +2493,15 @@ static void drawCursor(textDisp *textD, int x, int y)
     /* Save the last position drawn */
     textD->cursorX = x;
     textD->cursorY = y;
+#ifndef NO_XMIM
+    {
+        XPoint spot;
+        spot.x = max(textD->left, min(x, textD->left + textD->width));
+        spot.y = max(textD->top, min(y + textD->ascent, textD->top + textD->height));
+        XmImVaSetValues(textD->w, XmNspotLocation, &spot,
+                XmNforeground, textD->fgPixel, XmNbackground, textD->bgPixel, NULL);
+    }
+#endif
 }
 
 /*
@@ -3682,7 +3781,7 @@ static void measureDeletedLines(textDisp *textD, int pos, int nDeleted)
 **   retLineStart:  Start of the line where counting ended
 **   retLineEnd:    End position of the last line traversed
 */
-/* Scalar-safe soft wrap. Explicit margins count logical columns; window
+/* Grapheme-safe soft wrap. Explicit margins count logical columns; window
    margins use the same glyph advances as the renderer. Scan only the current
    physical line, and rescan the short suffix after a whitespace break. */
 static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
@@ -3691,36 +3790,38 @@ static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
 {
     int start = isLineStart ? startPos : TextDStartOfLine(textD, startPos);
     int p = start, lines = 0, columns = 0, pixels = 0, lastSpace = -1;
-    int next, end, newStart, advance, step, consumed, valid, length;
+    int next, end, newStart, advance, step, valid, length;
     unsigned long scalar;
-    char expanded[MAX_EXP_CHAR_LEN], bytes[4];
+    char expanded[MAX_EXP_CHAR_LEN];
+    char *cluster;
     while (p < buf->length) {
-        consumed = BufGetCodepoint(buf, p, &scalar, &valid);
-        next = p + consumed;
+        BufGetCodepoint(buf, p, &scalar, &valid);
+        next = BufNextGrapheme(buf, p);
         if (scalar == '\n') {
             end = p;
             newStart = next;
         } else {
-            if (scalar == ' ' || scalar == '\t') lastSpace = p;
-            step = BufCodepointWidth(buf, p, columns);
+            /* Replacing a whitespace cell with a wrap break must not
+               detach combining marks from that whitespace. */
+            if ((scalar == ' ' || scalar == '\t') && next == p + 1)
+                lastSpace = p;
+            step = BufGraphemeWidth(buf, p, columns);
             if (scalar == '\t') {
                 expanded[0] = ' ';
                 length = 1;
-            } else if (scalar < 128 && valid) {
+            } else if (scalar < 128 && valid && next - p == 1) {
                 length = BufExpandCharacter(BufGetCharacter(buf, p), columns,
                         expanded, buf->tabDist, buf->nullSubsChar);
             } else {
-                length = valid ? consumed : 3;
-                if (valid) {
-                    int j;
-                    for (j = 0; j < consumed; j++) bytes[j] = BufGetCharacter(buf, p+j);
-                    memcpy(expanded, bytes, consumed);
-                } else memcpy(expanded, "\xef\xbf\xbd", 3);
+                length = valid ? next - p : 3;
+                if (!valid) memcpy(expanded, "\xef\xbf\xbd", 3);
             }
             {
                 utf8MeasureContext ctx;
                 ctx.textD = textD; ctx.start = styleOffset;
-                advance = measureUtf8Cell(expanded, length, p, &ctx);
+                cluster = valid && next - p > 1 ? BufGetRange(buf, p, next) : NULL;
+                advance = measureUtf8Cell(cluster ? cluster : expanded, length, p, &ctx);
+                NEditFree(cluster);
             }
             if (scalar == '\t') advance = advance > 0 && step > INT_MAX/advance
                     ? INT_MAX : advance * step;

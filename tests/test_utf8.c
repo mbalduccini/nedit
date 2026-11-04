@@ -67,6 +67,8 @@ static void testDecoder(void)
 static void assertContents(textBuffer *buf, const char *expected)
 {
     char *actual = BufGetAll(buf);
+    if (buf->length != (int)strlen(expected) || strcmp(actual, expected))
+        fprintf(stderr, "Actual: [%s] (%d), expected: [%s] (%lu)\n", actual, buf->length, expected, (unsigned long)strlen(expected));
     assert(buf->length == (int)strlen(expected));
     assert(strcmp(actual, expected) == 0);
     NEditFree(actual);
@@ -76,6 +78,7 @@ static void testBoundaries(void)
 {
     const char text[] = "A\xc3\xa9\xe4\xb8\xad\xf0\x90\x90\x80Z";
     const int boundaries[] = {0, 1, 3, 6, 10, 11};
+    const int columns[] = {0, 1, 2, 4, 5, 6};
     const unsigned long scalars[] = {'A', 0xe9, 0x4e2d, 0x10400, 'Z'};
     textBuffer *buf = BufCreate();
     unsigned long scalar;
@@ -105,8 +108,8 @@ static void testBoundaries(void)
                 if (p > boundaries[i])
                     assert(BufPrevCharacter(buf, p) == boundaries[i]);
             }
-            assert(BufCountDispChars(buf, 0, boundaries[i + 1]) == i + 1);
-            assert(BufCountForwardDispChars(buf, 0, i + 1) == boundaries[i + 1]);
+            assert(BufCountDispChars(buf, 0, boundaries[i + 1]) == columns[i + 1]);
+            assert(BufCountForwardDispChars(buf, 0, columns[i + 1]) == boundaries[i + 1]);
         }
     }
     assert(BufPrevCharacter(buf, 0) == 0);
@@ -152,9 +155,9 @@ static void testMalformedAndColumns(void)
     assert(BufNextCharacter(buf, 3) == 4);
     assert(BufPrevCharacter(buf, 4) == 3);
     BufSetAll(buf, "\xc3\xa9\t\xe4\xb8\xad\nZ\x01");
-    assert(BufCountDispChars(buf, 0, 6) == 9);
+    assert(BufCountDispChars(buf, 0, 6) == 10);
     assert(BufCountForwardDispChars(buf, 0, 2) == 3);
-    assert(BufCountForwardDispChars(buf, 0, 9) == 6);
+    assert(BufCountForwardDispChars(buf, 0, 10) == 6);
     assert(BufCountForwardDispChars(buf, 0, 100) == 6);
     assert(BufCountDispChars(buf, 7, 9) == 6); /* Z + <soh> */
     /* UTF-8 interpretation must not lose the existing binary/NUL round trip. */
@@ -195,7 +198,7 @@ static void testLayout(void)
     int i, p, overflow = INT_MAX;
 
     assert(layout != NULL);
-    assert(layout->nCells == 6 && layout->columns == 11 && layout->width == 93);
+    assert(layout->nCells == 6 && layout->columns == 12 && layout->width == 93);
     for (i = 0; i < 6; i++) {
         assert(layout->cells[i].byteStart == bytes[i]);
         assert(layout->cells[i].byteEnd == bytes[i + 1]);
@@ -223,12 +226,100 @@ static void testLayout(void)
     Utf8LayoutFree(layout);
 }
 
+static void testGraphemesAndRectangles(void)
+{
+    const char *text = "Ae\xcc\x81\xe4\xb8\xad\xf0\x9f\x87\xba\xf0\x9f\x87\xb8\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbbZ";
+    const int boundaries[] = {0, 1, 4, 7, 15, 26, 27};
+    textBuffer *buf = BufCreate();
+    char *copy;
+    int i, gap, p, valid;
+    unsigned long scalar;
+    BufSetEncoding(buf, BUF_ENCODING_UTF8);
+    BufSetAll(buf, text);
+    for (gap = 0; gap <= buf->length; gap++) {
+        BufInsert(buf, gap, "");
+        for (i = 0; i < 6; i++) {
+            assert(BufNextGrapheme(buf, boundaries[i]) == boundaries[i + 1]);
+            assert(BufPrevGrapheme(buf, boundaries[i + 1]) == boundaries[i]);
+            for (p = boundaries[i]; p < boundaries[i + 1]; p++)
+                assert(BufStartOfGrapheme(buf, p) == boundaries[i]);
+        }
+    }
+    assert(BufCountDispChars(buf, 0, 7) == 4);
+    BufSelect(buf, 2, 3);
+    assert(buf->primary.start == 1 && buf->primary.end == 4);
+    BufSetAll(buf, "\xe4\xb8\xad\tX\ne\xcc\x81\tY");
+    buf->useTabs = 0;
+    copy = BufGetTextInRect(buf, 0, buf->length, 0, 2);
+    assert(!strcmp(copy, "\xe4\xb8\xad\ne\xcc\x81"));
+    NEditFree(copy);
+    BufRemoveRect(buf, 0, buf->length, 0, 2);
+    assertContents(buf, "      X\n      Y");
+    BufSetAll(buf, "A\xe4\xb8\xadZ\nAe\xcc\x81Z");
+    BufInsertCol(buf, 1, 0, "\xc3\xa9\n\xce\xb2", NULL, NULL);
+    assertContents(buf, "A\xc3\xa9\xe4\xb8\xadZ\nA\xce\xb2" "e\xcc\x81Z");
+    BufReplaceRect(buf, 0, buf->length, 1, 2, "Q\nR");
+    assertContents(buf, "AQ\xe4\xb8\xadZ\nAR" "e\xcc\x81Z");
+    BufOverlayRect(buf, 0, 1, 3, "\xc3\xa9\n\xce\xb2", NULL, NULL);
+    assertContents(buf, "A\xc3\xa9  Z\nA\xce\xb2 Z");
+    /* Test every rectangle edge on mixed wide and combining text. */
+    for (i = 0; i < 12; i++) for (gap = i; gap < 12; gap++) {
+        BufSetAll(buf, "e\xcc\x81\xe4\xb8\xad\tZ\n\xe4\xb8\xad" "e\xcc\x81\tQ");
+        BufRemoveRect(buf, 0, buf->length, i, gap);
+        for (p = 0; p < buf->length;) {
+            p += BufGetCodepoint(buf, p, &scalar, &valid);
+            assert(valid);
+        }
+    }
+    BufSetAll(buf, "A\nB\n");
+    assert(BufNextGrapheme(buf, 1) == 2);
+    assert(BufPrevGrapheme(buf, 2) == 1);
+    assert(BufNextGrapheme(buf, 3) == 4);
+    BufSetAll(buf, "a\x80\xcc\x81");
+    assert(BufNextGrapheme(buf, 1) == 2);
+    assert(BufNextGrapheme(buf, 2) == 4);
+    BufSetAll(buf, "");
+    copy = BufGetTextInRect(buf, 0, 0, 0, 0);
+    assert(!strcmp(copy, "")); NEditFree(copy);
+    BufSetAll(buf, "e\xcc\x81\tZ"); BufSetTabDistance(buf, 100);
+    BufInsertCol(buf, 50, 0, "中", NULL, NULL);
+    copy = BufGetAll(buf);
+    assert(strstr(copy, "中") != NULL);
+    NEditFree(copy); BufSetTabDistance(buf, 8);
+    BufSetAll(buf, "e\xcc\x81\x80\xcc\x81");
+    BufInsertCol(buf, 1, 0, "Q", NULL, NULL);
+    assertContents(buf, "e\xcc\x81Q\x80\xcc\x81");
+    {
+        utf8LineLayout *map = Utf8LayoutCreate("e\xcc\x81\xe4\xb8\xad", 6, 8, 0, measure, NULL);
+        assert(map && map->nCells == 2 && map->columns == 3);
+        assert(Utf8LayoutXToByte(map, 1, 0) == 0);
+        assert(Utf8LayoutByteToX(map, 2) == 0);
+        Utf8LayoutFree(map);
+    }
+    /* Graphemes have no fixed byte limit; render storage must grow with them. */
+    {
+        char longCluster[603];
+        utf8LineLayout *map;
+        longCluster[0] = 'e';
+        for (i = 0; i < 300; i++) memcpy(longCluster + 1 + 2*i, "\xcc\x81", 2);
+        longCluster[601] = 'Z'; longCluster[602] = '\0';
+        BufSetAll(buf, longCluster);
+        assert(BufNextGrapheme(buf, 0) == 601 && BufPrevGrapheme(buf, 601) == 0);
+        map = Utf8LayoutCreate(longCluster, 602, 8, 0, measure, NULL);
+        assert(map && map->nCells == 2 && map->cells[0].renderLength == 601);
+        assert(!memcmp(map->cells[0].renderText, longCluster, 601));
+        Utf8LayoutFree(map);
+    }
+    BufFree(buf);
+}
+
 int main(void)
 {
     testDecoder();
     testBoundaries();
     testMalformedAndColumns();
     testLayout();
+    testGraphemesAndRectangles();
     puts("UTF-8 decoder, gap-buffer, and line-layout tests passed (all Unicode scalars).");
     return 0;
 }

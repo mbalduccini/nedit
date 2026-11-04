@@ -12,19 +12,31 @@ utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
     utf8LineLayout *layout;
     utf8LayoutCell *cell;
     int pos, consumed, valid, columns, advance;
+    size_t renderCapacity = 1;
+    int i;
+    char *render;
     int capacity = length < 128 ? length : 128;
     unsigned long scalar;
 
     if (length < 0 || (length > 0 && text == NULL) || measure == NULL ||
             tabDist < 1 ||
-            (size_t)length > (size_t)-1 / sizeof(utf8LayoutCell)) return NULL;
+            (size_t)length > (size_t)-1 / sizeof(utf8LayoutCell) ||
+            (size_t)length > ((size_t)-1 - 1) / (MAX_EXP_CHAR_LEN + 3)) return NULL;
     layout = (utf8LineLayout *)NEditMalloc(sizeof(utf8LineLayout));
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)text[i];
+        renderCapacity += c < 32 || c == 127 || c == (unsigned char)nullSubsChar
+                ? MAX_EXP_CHAR_LEN : c >= 128 ? 3 : 1;
+    }
     layout->nCells = layout->byteLength = layout->columns = layout->width = 0;
+    layout->references = 1;
+    layout->renderStorage = render = (char *)NEditMalloc(renderCapacity);
     layout->cells = length == 0 ? NULL : (utf8LayoutCell *)
             NEditMalloc((size_t)capacity * sizeof(utf8LayoutCell));
 
     for (pos = 0; pos < length; pos += consumed) {
-        consumed = Utf8Decode(text + pos, length - pos, &scalar, &valid);
+        Utf8Decode(text + pos, length - pos, &scalar, &valid);
+        consumed = Utf8NextGrapheme(text + pos, length - pos, &columns);
         if (scalar == '\n') {
             Utf8LayoutFree(layout);
             return NULL;
@@ -35,6 +47,7 @@ utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
                     (size_t)capacity * sizeof(utf8LayoutCell));
         }
         cell = &layout->cells[layout->nCells];
+        cell->renderText = render;
         cell->byteStart = pos;
         cell->byteEnd = pos + consumed;
         cell->columnStart = layout->columns;
@@ -51,7 +64,7 @@ utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
             cell->renderLength = valid ? consumed : 3;
             memcpy(cell->renderText, valid ? text + pos : "\xef\xbf\xbd",
                     cell->renderLength);
-            columns = 1;
+            if (!valid) columns = 1;
         }
         advance = measure(cell->renderText, cell->renderLength, pos, arg);
         if (scalar == '\t') {
@@ -71,6 +84,7 @@ utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
         cell->columnEnd = layout->columns;
         cell->xEnd = layout->width;
         layout->nCells++;
+        render += cell->renderLength;
     }
     layout->byteLength = length;
     return layout;
@@ -78,7 +92,8 @@ utf8LineLayout *Utf8LayoutCreate(const char *text, int length, int tabDist,
 
 void Utf8LayoutFree(utf8LineLayout *layout)
 {
-    if (layout == NULL) return;
+    if (layout == NULL || --layout->references) return;
+    NEditFree(layout->renderStorage);
     NEditFree(layout->cells);
     NEditFree(layout);
 }
@@ -111,4 +126,9 @@ int Utf8LayoutXToByte(const utf8LineLayout *layout, int x, int nearestCursor)
     }
     return low == layout->nCells ? layout->byteLength
             : layout->cells[low].byteStart;
+}
+
+void Utf8LayoutRetain(utf8LineLayout *layout)
+{
+    if (layout) layout->references++;
 }

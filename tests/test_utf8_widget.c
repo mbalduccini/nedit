@@ -6,6 +6,10 @@
 #include "nedit.h"
 #include "calltips.h"
 #include "undo.h"
+#include "textDrag.h"
+#include "utf8.h"
+#include <time.h>
+#include <Xm/XmIm.h>
 #include "highlight.h"
 #include "../util/nedit_malloc.h"
 
@@ -19,7 +23,26 @@
 
 /* Only application integration outside the standalone widget is stubbed.
    Widget, buffer, selection, display, and undo implementations are real. */
-WindowInfo *WidgetToWindow(Widget w) { (void)w; return NULL; }
+/* Force the documented XIM overflow contract once, while retaining real
+   Motif lookup for every other key. This verifies complete long commits. */
+static int overflowCommit;
+int __real_XmImMbLookupString(Widget w, XKeyPressedEvent *event, char *text,
+        int capacity, KeySym *keysym, Status *status);
+int __wrap_XmImMbLookupString(Widget w, XKeyPressedEvent *event, char *text,
+        int capacity, KeySym *keysym, Status *status)
+{
+    int i;
+    if (!overflowCommit)
+        return __real_XmImMbLookupString(w, event, text, capacity, keysym, status);
+    if (capacity < 60) { *status = XBufferOverflow; return 60; }
+    for (i = 0; i < 20; i++) memcpy(text + i*3, "e\xcc\x81", 3);
+    *status = XLookupChars;
+    overflowCommit = 0;
+    return 60;
+}
+
+static WindowInfo *testWindow;
+WindowInfo *WidgetToWindow(Widget w) { (void)w; return testWindow; }
 void TextDKillCalltip(textDisp *textD, int id) { (void)textD; (void)id; }
 void TextDRedrawCalltip(textDisp *textD, int callID)
     { (void)textD; (void)callID; }
@@ -59,6 +82,8 @@ static void recordUndo(int pos, int inserted, int deleted, int restyled,
 static void assertContents(textBuffer *buf, const char *expected)
 {
     char *text = BufGetAll(buf);
+    if (buf->length != (int)strlen(expected) || strcmp(text, expected))
+        fprintf(stderr, "Actual: [%s] (%d), expected: [%s] (%lu)\n", text, buf->length, expected, (unsigned long)strlen(expected));
     assert(buf->length == (int)strlen(expected));
     assert(strcmp(text, expected) == 0);
     NEditFree(text);
@@ -127,6 +152,14 @@ static void finishStyle(textDisp *display, int pos, void *arg)
     assert(display->styleBuffer == styleBuf);
     assert(BufStartOfCharacter(display->buffer, pos) == pos);
     BufReplace(styleBuf, pos, pos+1, "B");
+}
+
+static void requestWideIndent(Widget w, XtPointer arg, XtPointer data)
+{
+    smartIndentCBStruct *request = (smartIndentCBStruct *)data;
+    (void)w;
+    (void)arg;
+    if (request->reason == NEWLINE_INDENT_NEEDED) request->indentRequest = 9;
 }
 
 static void checkLayout(textDisp *display)
@@ -278,11 +311,164 @@ static void checkLayout(textDisp *display)
     TextDSetInsertPosition(display, 0);
     TextInsertAtCursor(display->w, "\xc3\xa9\xc3\xa9 \xc3\xa9\xc3\xa9", NULL, True, True);
     assertContents(buf, "\xc3\xa9\xc3\xa9\n\xc3\xa9\xc3\xa9");
+    BufSetAll(buf, "");
+    XtVaSetValues(display->w, textNsmartIndent, True, NULL);
+    XtAddCallback(display->w, textNsmartIndentCallback, requestWideIndent, NULL);
+    TextDSetInsertPosition(display, 0);
+    TextInsertAtCursor(display->w,
+            "\xc3\xa9\xc3\xa9 \xc3\xa9\xc3\xa9 \xc3\xa9\xc3\xa9", NULL, True, True);
+    assertContents(buf, "\xc3\xa9\xc3\xa9\n\xc3\xa9\xc3\xa9\n\xc3\xa9\xc3\xa9");
+    XtRemoveCallback(display->w, textNsmartIndentCallback, requestWideIndent, NULL);
+    XtVaSetValues(display->w, textNsmartIndent, False, NULL);
+    BufSetAll(buf, ""); TextDSetInsertPosition(display, 0);
+    TextInsertAtCursor(display->w, "aa \xcc\x81 bb cc", NULL, True, True);
+    assertContents(buf, "aa \xcc\x81\nbb\ncc");
     XtVaSetValues(display->w, textNautoWrap, False, textNwrapMargin, 0, NULL);
 
-    BufSetAll(buf, "UTF-8 in classic NEdit\nLatin: caf\xc3\xa9   Greek: \xce\xb1\xce\xb2\xce\xb3   Cyrillic: \xd0\x96\xd0\xb4\nCJK: \xe4\xb8\xad\xe6\x96\x87   Supplementary: \xf0\x90\x90\x80\nTabs:\t\xc3\xa9\tZ   Invalid bytes: \x80\xe2\x82");
+    BufSetAll(buf, "UTF-8 in classic NEdit\nLatin: caf\xc3\xa9   Greek: \xce\xb1\xce\xb2\xce\xb3   Cyrillic: \xd0\x96\xd0\xb4\nCJK: \xe4\xb8\xad\xe6\x96\x87   Supplementary: \xf0\x90\x90\x80\nCombining: e\xcc\x81 a\xcc\x88   Tabs:\t\xc3\xa9\tZ   Invalid bytes: \x80\xe2\x82");
     repaint(display);
     screenshot(display);
+}
+
+static void checkPhaseOne(textDisp *display, WindowInfo *window)
+{
+    textBuffer *buf = display->buffer;
+    Widget text = display->w;
+    TextWidget tw = (TextWidget)text;
+    const char *cluster = "e\xcc\x81\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb";
+    int p, next, x, y, nx, ny, i, type;
+    int width = display->width, height = display->height;
+    char *longLine;
+    clock_t began;
+    BufSetAll(buf, cluster);
+    for (p = 0; p < buf->length; p = next) {
+        next = BufNextGrapheme(buf, p);
+        assert(TextDPositionToXY(display, p, &x, &y));
+        assert(TextDPositionToXY(display, next, &nx, &ny));
+        assert(TextDXYToPosition(display, nx - 1, ny) == next);
+        assert(TextDXYToCharPos(display, (x + nx) / 2, y) == p);
+        TextSetCursorPos(text, p + 1);
+        assert(TextGetCursorPos(text) == p);
+    }
+    assert(Utf8FontWidth(display->utf8Font, "e\xcc\x81", 3, 0) ==
+            Utf8FontWidth(display->utf8Font, "e", 1, 0));
+    BufSetAll(buf, "eZ"); TextSetCursorPos(text, 1);
+    TextDOverstrike(display, "\xcc\x81");
+    assertContents(buf, "e\xcc\x81Z");
+    assert(TextGetCursorPos(text) == 3);
+    BufSetAll(buf, "\xcc\x81Z"); TextSetCursorPos(text, 0);
+    TextInsertAtCursor(text, "e", NULL, True, True);
+    assertContents(buf, "e\xcc\x81Z");
+    assert(TextGetCursorPos(text) == 3);
+    BufSetAll(buf, "A\xe4\xb8\xadZ"); TextSetCursorPos(text, 4);
+    XtVaSetValues(text, textNoverstrike, True, NULL);
+    action(text, "delete_previous_character");
+    assertContents(buf, "A  Z");
+    XtVaSetValues(text, textNoverstrike, False, NULL);
+    BufSetAll(buf, cluster);
+    BufAddModifyCB(buf, recordUndo, window);
+    TextSetCursorPos(text, buf->length);
+    action(text, "delete_previous_character");
+    assertContents(buf, "e\xcc\x81");
+    Undo(window); assertContents(buf, cluster);
+    Redo(window); assertContents(buf, "e\xcc\x81");
+    action(text, "delete_previous_character"); assertContents(buf, "");
+    ClearUndoList(window); ClearRedoList(window);
+    BufSetAll(buf, "Ae\xcc\x81\xe4\xb8\xadZ\nA\xe4\xb8\xad" "e\xcc\x81Z");
+    ClearUndoList(window);
+    BufRectSelect(buf, 0, buf->length, 1, 3);
+    action(text, "delete_next_character");
+    assertContents(buf, "A Z\nAe\xcc\x81Z");
+    Undo(window);
+    assertContents(buf, "Ae\xcc\x81\xe4\xb8\xadZ\nA\xe4\xb8\xad" "e\xcc\x81Z");
+    ClearUndoList(window); ClearRedoList(window);
+    BufRemoveModifyCB(buf, recordUndo, window);
+
+    /* Copy/move/overlay and cancellation exercise actual drag state. */
+    for (type = DRAG_COPY; type <= DRAG_OVERLAY_COPY; type++) {
+        BufSetAll(buf, "Ae\xcc\x81Z\nB\xe4\xb8\xadQ");
+        BufRectSelect(buf, 0, 5, 1, 2);
+        assert(TextDPositionToXY(display, 1, &x, &y));
+        tw->text.btnDownX = x; tw->text.btnDownY = y;
+        BeginBlockDrag(tw);
+        assert(TextDPositionToXY(display, 7, &nx, &ny));
+        BlockDragSelection(tw, nx, ny, type);
+        for (p = 0; p < buf->length;) {
+            int valid;
+            p += BufGetCodepoint(buf, p, NULL, &valid);
+            assert(valid);
+        }
+        CancelBlockDrag(tw);
+        assertContents(buf, "Ae\xcc\x81Z\nB\xe4\xb8\xadQ");
+    }
+    /* Actual Motif key lookup must commit UTF-8 bytes in a UTF-8 locale. */
+    {
+        int minimum, maximum, perCode;
+        KeySym unicode = 0x00e9, *old;
+        XEvent event, mapping;
+        XDisplayKeycodes(XtDisplay(text), &minimum, &maximum);
+        old = XGetKeyboardMapping(XtDisplay(text), maximum, 1, &perCode);
+        XChangeKeyboardMapping(XtDisplay(text), maximum, 1, &unicode, 1);
+        XSync(XtDisplay(text), False);
+        memset(&mapping, 0, sizeof(mapping));
+        mapping.xmapping.type = MappingNotify;
+        mapping.xmapping.display = XtDisplay(text);
+        mapping.xmapping.request = MappingKeyboard;
+        mapping.xmapping.first_keycode = maximum; mapping.xmapping.count = 1;
+        XRefreshKeyboardMapping(&mapping.xmapping);
+        BufSetAll(buf, ""); TextSetCursorPos(text, 0);
+        memset(&event, 0, sizeof(event));
+        event.xkey.type = KeyPress; event.xkey.display = XtDisplay(text);
+        event.xkey.window = XtWindow(text); event.xkey.keycode = maximum;
+        XtCallActionProc(text, "self_insert", &event, NULL, 0);
+        assertContents(buf, "\xc3\xa9");
+        BufSetAll(buf, ""); TextSetCursorPos(text, 0);
+        overflowCommit = 1;
+        XtCallActionProc(text, "self_insert", &event, NULL, 0);
+        assert(!overflowCommit && buf->length == 60);
+        for (p = 0; p < 60; p += 3)
+            assert(BufGetCharacter(buf, p) == 'e' && BufNextGrapheme(buf, p) == p + 3);
+        XChangeKeyboardMapping(XtDisplay(text), maximum, perCode, old, 1);
+        XRefreshKeyboardMapping(&mapping.xmapping);
+        XFree(old);
+    }
+    /* Breaks never land inside combining or ZWJ sequences. */
+    BufSetAll(buf, cluster);
+    TextDSetWrapMode(display, True, 1);
+    p = 0;
+    while (p < buf->length) {
+        next = TextDCountForwardNLines(display, p, 1, True);
+        assert(next > p && BufStartOfGrapheme(buf, next) == next);
+        p = next;
+    }
+    TextDSetWrapMode(display, False, 0);
+    TextDResize(display, width, height);
+
+    BufSetAll(buf, "aa \xcc\x81 bb cc");
+    TextDSetWrapMode(display, True, 3);
+    assert(TextDCountForwardNLines(display, 0, 1, True) == 6);
+    TextDSetWrapMode(display, False, 0);
+
+    /* Confirm reuse of long-line measurements after thousands of hit tests. */
+    longLine = (char *)NEditMalloc(200001);
+    for (i = 0; i < 100000; i++) memcpy(longLine + 2*i, "\xc3\xa9", 2);
+    longLine[200000] = 0;
+    BufSetAll(buf, longLine); NEditFree(longLine);
+    TextDPositionToXY(display, 20, &x, &y);
+    began = clock();
+    for (i = 0; i < 1000; i++) {
+        TextSetCursorPos(text, i % 10 * 2);
+        assert(TextDPositionToXY(display, 20, &x, &y));
+        assert(TextDXYToPosition(display, x, y) == 20);
+    }
+    printf("1000 cached hit tests on a 200 KB line: %.3f CPU seconds.\n",
+            (double)(clock() - began)/CLOCKS_PER_SEC);
+    assert((double)(clock() - began)/CLOCKS_PER_SEC < 5.0);
+    BufSetEncoding(buf, BUF_ENCODING_8BIT); TextDRefreshEncoding(display);
+    BufSetAll(buf, "\xc3\xa9"); TextSetCursorPos(text, 1);
+    BufSetEncoding(buf, BUF_ENCODING_UTF8); TextDRefreshEncoding(display);
+    assert(display->cursorPos == 0);
+    assert(display->utf8Font != NULL);
 }
 
 int main(int argc, char **argv)
@@ -296,6 +482,7 @@ int main(int argc, char **argv)
     const int boundaries[] = {0, 1, 3, 6, 10, 11};
     int i;
 
+    XtSetLanguageProc(NULL, NULL, NULL);
     shell = XtVaAppInitialize(&app, "NEditUtf8Test", NULL, 0,
             &argc, argv, NULL, NULL);
     /* Unmanaged auxiliary shells avoid requiring the application UI. */
@@ -341,6 +528,7 @@ int main(int argc, char **argv)
 
     memset(&window, 0, sizeof(window));
     window.buffer = buf;
+    testWindow = &window;
     window.lastFocus = text;
     BufAddModifyCB(buf, recordUndo, &window);
     action(text, "delete_previous_character");
@@ -361,11 +549,11 @@ int main(int argc, char **argv)
     BufSetAll(buf, sample);
     TextSetCursorPos(text, 1);
     TextDOverstrike(display, "\xce\xb2\xce\xb3");
-    assertContents(buf, "A\xce\xb2\xce\xb3\xf0\x90\x90\x80Z");
+    assertContents(buf, "A\xce\xb2\xce\xb3 \xf0\x90\x90\x80Z");
     assert(TextGetCursorPos(text) == 5);
     XtVaSetValues(text, textNoverstrike, True, NULL);
     action(text, "delete_previous_character");
-    assertContents(buf, "A\xce\xb2 \xf0\x90\x90\x80Z");
+    assertContents(buf, "A\xce\xb2  \xf0\x90\x90\x80Z");
     XtVaSetValues(text, textNoverstrike, False, NULL);
 
     BufSetAll(buf, "\xc3\xa9\xe4\xb8\xad\nabc");
@@ -383,6 +571,7 @@ int main(int argc, char **argv)
     assertContents(buf, "\x80");
 
     checkLayout(display);
+    checkPhaseOne(display, &window);
 
     BufSetEncoding(buf, BUF_ENCODING_8BIT);
     TextDSetFont(display, display->fontStruct);
@@ -392,6 +581,10 @@ int main(int argc, char **argv)
     assert(TextGetCursorPos(text) == 2);
     action(text, "delete_next_character");
     assertContents(buf, "A\xc3\xe4\xb8\xad\xf0\x90\x90\x80Z");
+    BufSetAll(buf, "A\001Z"); TextSetCursorPos(text, 2);
+    XtVaSetValues(text, textNoverstrike, True, NULL);
+    action(text, "delete_previous_character");
+    assertContents(buf, "A Z");
 
     XtDestroyWidget(shell);
     XtDestroyApplicationContext(app);

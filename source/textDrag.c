@@ -69,8 +69,8 @@ void BeginBlockDrag(TextWidget tw)
 {
     textDisp *textD = tw->text.textD;
     textBuffer *buf = textD->buffer;
-    int fontHeight = textD->fontStruct->ascent + textD->fontStruct->descent;
-    int fontWidth = textD->fontStruct->max_bounds.width;
+    int fontHeight = textD->ascent + textD->descent;
+    int fontWidth = TextDMaxFontWidth(textD, False);
     selection *sel = &buf->primary;
     int nLines, mousePos, lineStart;
     int x, y, lineEnd;
@@ -80,6 +80,8 @@ void BeginBlockDrag(TextWidget tw)
     /* Save a copy of the whole text buffer as a backup, and for
        deriving changes */
     tw->text.dragOrigBuf = BufCreate();
+    BufSetEncoding(tw->text.dragOrigBuf, buf->encoding);
+    tw->text.dragOrigBuf->nullSubsChar = buf->nullSubsChar;
     BufSetTabDistance(tw->text.dragOrigBuf, buf->tabDist);
     tw->text.dragOrigBuf->useTabs = buf->useTabs;
     text = BufGetAll(buf);
@@ -116,7 +118,9 @@ void BeginBlockDrag(TextWidget tw)
     tw->text.dragInserted = sel->end - sel->start;
     if (sel->rectangular) {
     	textBuffer *testBuf = BufCreate();
-    	char *testText = BufGetRange(buf, sel->start, sel->end);
+        char *testText = BufGetRange(buf, sel->start, sel->end);
+        BufSetEncoding(testBuf, buf->encoding);
+        testBuf->nullSubsChar = buf->nullSubsChar;
         BufSetTabDistance(testBuf, buf->tabDist);
         testBuf->useTabs = buf->useTabs;
     	BufSetAll(testBuf, testText);
@@ -168,8 +172,8 @@ void BlockDragSelection(TextWidget tw, int x, int y, int dragType)
 {
     textDisp *textD = tw->text.textD;
     textBuffer *buf = textD->buffer;
-    int fontHeight = textD->fontStruct->ascent + textD->fontStruct->descent;
-    int fontWidth = textD->fontStruct->max_bounds.width;
+    int fontHeight = textD->ascent + textD->descent;
+    int fontWidth = TextDMaxFontWidth(textD, False);
     textBuffer *origBuf = tw->text.dragOrigBuf;
     int dragXOffset = tw->text.dragXOffset;
     textBuffer *tempBuf;
@@ -211,6 +215,8 @@ void BlockDragSelection(TextWidget tw, int x, int y, int dragType)
        range of characters which might be modified in this drag step
        (this could be tighter, but hopefully it's not too slow) */
     tempBuf = BufCreate();
+    BufSetEncoding(tempBuf, buf->encoding);
+    tempBuf->nullSubsChar = buf->nullSubsChar;
     tempBuf->tabDist = buf->tabDist;
     tempBuf->useTabs = buf->useTabs;
     tempStart = min3(tw->text.dragInsertPos, origSel->start,
@@ -321,10 +327,16 @@ void BlockDragSelection(TextWidget tw, int x, int y, int dragType)
     if (rectangular || overlay) {
     	insStart = insLineStart;
     	insRectStart = column;
-    } else { /* note, this will fail with proportional fonts */
-    	insStart = BufCountForwardDispChars(tempBuf, insLineStart - tempStart,
-    	    	column) + tempStart;
-    	insRectStart = 0;
+    } else {
+        /* Map the pixel hit in the displayed line to a column only after
+           resolving the complete grapheme, then into the temporary buffer. */
+        int hit = TextDXYToPosition(textD, max(0, x - dragXOffset),
+                max(0, y - (tw->text.dragYOffset % fontHeight)));
+        if (buf->encoding == BUF_ENCODING_UTF8)
+            column = BufCountDispChars(buf, BufStartOfLine(buf, hit), hit);
+        insStart = BufCountForwardDispChars(tempBuf, insLineStart - tempStart,
+                column) + tempStart;
+        insRectStart = 0;
     }
     
     /* If the position is the same as last time, don't bother drawing (it
@@ -527,7 +539,7 @@ static void findTextMargins(textBuffer *buf, int start, int end, int *leftMargin
     char c;
     int pos, width = 0, maxWidth = 0, minWhite = INT_MAX, inWhite = True;
     
-    for (pos=start; pos<end; pos++) {
+    for (pos=start; pos<end; pos = BufNextGrapheme(buf, pos)) {
     	c = BufGetCharacter(buf, pos);
     	if (inWhite && c != ' ' && c != '\t') {
     	    inWhite = False;
@@ -540,7 +552,7 @@ static void findTextMargins(textBuffer *buf, int start, int end, int *leftMargin
     	    width = 0;
     	    inWhite = True;
     	} else
-    	    width += BufCharWidth(c, width, buf->tabDist, buf->nullSubsChar);
+            width += BufGraphemeWidth(buf, pos, width);
     }
     if (width > maxWidth)
     	maxWidth = width;

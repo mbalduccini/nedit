@@ -181,6 +181,7 @@ int Utf8FontWidth(utf8Font *font, const char *text, int length, int style)
     XGlyphInfo extents;
     for (pos = 0; pos < length; pos += consumed) {
         consumed = Utf8Decode(text + pos, length - pos, &scalar, NULL);
+        if (Utf8CharWidth(scalar) == 0) continue;
         value = (FcChar32)scalar;
         XftTextExtents32(font->display, glyphFont(font, scalar, style),
                 &value, 1, &extents);
@@ -194,7 +195,7 @@ void Utf8FontDraw(utf8Font *font, Pixel pixel, int x, int baseline,
         const char *text, int length, int style,
         int clipX, int clipY, int clipWidth, int clipHeight)
 {
-    int pos, consumed, i;
+    int pos, consumed, i, baseX = x;
     unsigned long scalar;
     FcChar32 value;
     XGlyphInfo extents;
@@ -230,9 +231,16 @@ void Utf8FontDraw(utf8Font *font, Pixel pixel, int x, int baseline,
         consumed = Utf8Decode(text + pos, length - pos, &scalar, NULL);
         value = (FcChar32)scalar;
         face = glyphFont(font, scalar, style);
-        XftDrawString32(font->draw, &color, face, x, baseline, &value, 1);
-        XftTextExtents32(font->display, face, &value, 1, &extents);
-        x += extents.xOff;
+        if (Utf8CharWidth(scalar) == 0) {
+            /* Default-ignorable scalars affect boundaries, not visible ink. */
+            if (!Utf8IsIgnorable(scalar))
+                XftDrawString32(font->draw, &color, face, baseX, baseline, &value, 1);
+        } else {
+            baseX = x;
+            XftDrawString32(font->draw, &color, face, x, baseline, &value, 1);
+            XftTextExtents32(font->display, face, &value, 1, &extents);
+            x += extents.xOff;
+        }
     }
 }
 #else

@@ -59,6 +59,9 @@ typedef struct _textBuffer {
                                    gapEnd - gapStart + length) */
     char *buf;                  /* allocated memory where the text is stored */
     enum bufEncoding encoding;  /* text interpretation; storage/offsets are bytes */
+    unsigned long revision;
+    int *graphemes, nGraphemes, graphemeStart, graphemeEnd;
+    unsigned long graphemeRevision;
     int gapStart;  	        /* points to the first character of the gap */
     int gapEnd;                 /* points to the first char after the gap */
     selection primary;		/* highlighted areas */
@@ -104,6 +107,11 @@ int BufEndOfCharacter(const textBuffer *buf, int pos);
 int BufNextCharacter(const textBuffer *buf, int pos);
 int BufPrevCharacter(const textBuffer *buf, int pos);
 int BufCodepointWidth(const textBuffer *buf, int pos, int indent);
+int BufStartOfGrapheme(const textBuffer *buf, int pos);
+int BufEndOfGrapheme(const textBuffer *buf, int pos);
+int BufNextGrapheme(const textBuffer *buf, int pos);
+int BufPrevGrapheme(const textBuffer *buf, int pos);
+int BufGraphemeWidth(const textBuffer *buf, int pos, int indent);
 char *BufGetTextInRect(textBuffer *buf, int start, int end,
 	int rectStart, int rectEnd);
 void BufInsert(textBuffer *buf, int pos, const char *text);

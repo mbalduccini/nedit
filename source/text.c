@@ -1470,11 +1470,11 @@ void TextInsertAtCursor(Widget w, char *chars, XEvent *event,
     colNum = BufCountDispChars(buf, lineStartPos, cursorPos);
     charsLength = strlen(chars);
     for (c=chars; *c!='\0' && *c!='\n'; ) {
-        int consumed = 1;
+        int consumed = 1, clusterColumns = 1;
         if (buf->encoding == BUF_ENCODING_UTF8)
-            consumed = Utf8Decode(c, chars + charsLength - c, NULL, NULL);
+            consumed = Utf8NextGrapheme(c, chars + charsLength - c, &clusterColumns);
         colNum += consumed == 1 ?
-                BufCharWidth(*c, colNum, buf->tabDist, buf->nullSubsChar) : 1;
+                BufCharWidth(*c, colNum, buf->tabDist, buf->nullSubsChar) : clusterColumns;
         c += consumed;
     }
     singleLine = *c == '\0';
@@ -2469,13 +2469,21 @@ static void deletePreviousCharacterAP(Widget w, XEvent *event, String *args,
     if (deleteEmulatedTab(w, event))
     	return;
 
-    prevPos = BufPrevCharacter(textD->buffer, insertPos);
+    prevPos = BufPrevGrapheme(textD->buffer, insertPos);
     if (((TextWidget)w)->text.overstrike) {
         c = BufGetCharacter(textD->buffer, prevPos);
     	if (c == '\n')
             BufRemove(textD->buffer, prevPos, insertPos);
-    	else if (c != '\t')
-            BufReplace(textD->buffer, prevPos, insertPos, " ");
+        else if (c != '\t') {
+            int columns = textD->buffer->encoding == BUF_ENCODING_UTF8 ?
+                    BufGraphemeWidth(textD->buffer, prevPos,
+                    BufCountDispChars(textD->buffer,
+                        BufStartOfLine(textD->buffer, prevPos), prevPos)) : 1;
+            char *padding = (char *)NEditMalloc(columns + 1);
+            memset(padding, ' ', columns); padding[columns] = '\0';
+            BufReplace(textD->buffer, prevPos, insertPos, padding);
+            NEditFree(padding);
+        }
     } else {
         BufRemove(textD->buffer, prevPos, insertPos);
     }
@@ -2504,7 +2512,7 @@ static void deleteNextCharacterAP(Widget w, XEvent *event, String *args,
     	return;
     }
     BufRemove(textD->buffer, insertPos,
-            BufNextCharacter(textD->buffer, insertPos));
+            BufNextGrapheme(textD->buffer, insertPos));
     checkAutoShowInsertPos(w);
     callCursorMovementCBs(w, event);
 }
@@ -2534,10 +2542,10 @@ static void deletePreviousWordAP(Widget w, XEvent *event, String *args,
         return;
     }
 
-    pos = BufPrevCharacter(textD->buffer, insertPos);
+    pos = BufPrevGrapheme(textD->buffer, insertPos);
     while (wordDelimiter(textD->buffer, pos, delimiters) &&
             pos != lineStart) {
-        pos = BufPrevCharacter(textD->buffer, pos);
+        pos = BufPrevGrapheme(textD->buffer, pos);
     }
 
     pos = startOfWord((TextWidget)w, pos);
@@ -2574,7 +2582,7 @@ static void deleteNextWordAP(Widget w, XEvent *event, String *args,
     pos = insertPos;
     while (wordDelimiter(textD->buffer, pos, delimiters) &&
             pos != lineEnd) {
-        pos = BufNextCharacter(textD->buffer, pos);
+        pos = BufNextGrapheme(textD->buffer, pos);
     }
 
     pos = endOfWord((TextWidget)w, pos);
@@ -2688,7 +2696,7 @@ static void forwardWordAP(Widget w, XEvent *event, String *args,
     pos = insertPos;
 
     if (hasKey("tail", args, nArgs)) {
-        for (; pos<buf->length; pos = BufNextCharacter(buf, pos)) {
+        for (; pos<buf->length; pos = BufNextGrapheme(buf, pos)) {
             if (!wordDelimiter(buf, pos, delimiters)) {
                 break;
             }
@@ -2700,7 +2708,7 @@ static void forwardWordAP(Widget w, XEvent *event, String *args,
         if (!wordDelimiter(buf, pos, delimiters)) {
             pos = endOfWord((TextWidget)w, pos);
         }
-        for (; pos<buf->length; pos = BufNextCharacter(buf, pos)) {
+        for (; pos<buf->length; pos = BufNextGrapheme(buf, pos)) {
             if (!wordDelimiter(buf, pos, delimiters)) {
                 break;
             }
@@ -2727,9 +2735,9 @@ static void backwardWordAP(Widget w, XEvent *event, String *args,
         ringIfNecessary(silent, w);
     	return;
     }
-    pos = BufPrevCharacter(textD->buffer, insertPos);
+    pos = BufPrevGrapheme(textD->buffer, insertPos);
     while (wordDelimiter(buf, pos, delimiters) && pos > 0)
-        pos = BufPrevCharacter(buf, pos);
+        pos = BufPrevGrapheme(buf, pos);
     pos = startOfWord((TextWidget)w, pos);
     	
     TextDSetInsertPosition(textD, pos);
@@ -3532,7 +3540,7 @@ static void simpleInsertAtCursor(Widget w, char *chars, XEvent *event,
 
     if (allowPendingDelete && pendingSelection(w)) {
     	BufReplaceSelected(buf, chars);
-    	TextDSetInsertPosition(textD, buf->cursorPosHint);
+        TextDSetInsertPosition(textD, BufEndOfGrapheme(buf, buf->cursorPosHint));
     } else if (((TextWidget)w)->text.overstrike) {
     	for (c=chars; *c!='\0' && *c!='\n'; c++);
     	if (*c == '\n')
@@ -3610,20 +3618,20 @@ static int deleteEmulatedTab(Widget w, XEvent *event)
        characters) */
     startPosIndent = indent = 0;
     startPos = lineStart;
-    for (pos=lineStart; pos < insertPos; pos++) {
+    for (pos=lineStart; pos < insertPos; pos = BufNextGrapheme(buf, pos)) {
     	c = BufGetCharacter(buf, pos);
-    	indent += BufCharWidth(c, indent, buf->tabDist, buf->nullSubsChar);
+        indent += BufGraphemeWidth(buf, pos, indent);
     	if (indent > toIndent)
     	    break;
     	startPosIndent = indent;
-    	startPos = pos + 1;
+        startPos = BufNextGrapheme(buf, pos);
     }  	
     
     /* Just to make sure, check that we're not deleting any non-white chars */
     for (pos=insertPos-1; pos>=startPos; pos--) {
     	c = BufGetCharacter(buf, pos);
     	if (c != ' ' && c != '\t') {
-    	    startPos = pos + 1;
+            startPos = BufNextGrapheme(buf, pos);
     	    break;
     	}
     }
@@ -3669,7 +3677,7 @@ static void selectWord(Widget w, int pointerX)
     
     TextPosToXY(w, insertPos, &x, &y);
     if (pointerX < x && insertPos > 0 && BufGetCharacter(buf, insertPos-1) != '\n')
-        insertPos = BufPrevCharacter(buf, insertPos);
+        insertPos = BufPrevGrapheme(buf, insertPos);
     BufSelect(buf, startOfWord(tw, insertPos), endOfWord(tw, insertPos));
 }
 
@@ -3706,10 +3714,10 @@ static int startOfWord(TextWidget w, int pos)
     char c = BufGetCharacter(buf, pos);
     if (buf->encoding == BUF_ENCODING_UTF8) {
         int previous, wordClass;
-        pos = BufStartOfCharacter(buf, pos);
+        pos = BufStartOfGrapheme(buf, pos);
         wordClass = utf8WordClass(w, pos);
         while (pos > 0) {
-            previous = BufPrevCharacter(buf, pos);
+            previous = BufPrevGrapheme(buf, pos);
             if (utf8WordClass(w, previous) != wordClass) break;
             pos = previous;
         }
@@ -3739,10 +3747,10 @@ static int endOfWord(TextWidget w, int pos)
     
     if (buf->encoding == BUF_ENCODING_UTF8) {
         int wordClass;
-        pos = BufStartOfCharacter(buf, pos);
+        pos = BufStartOfGrapheme(buf, pos);
         wordClass = utf8WordClass(w, pos);
         while (pos < buf->length && utf8WordClass(w, pos) == wordClass)
-            pos = BufNextCharacter(buf, pos);
+            pos = BufNextGrapheme(buf, pos);
         return pos;
     }
     if (c == ' ' || c== '\t') { 
@@ -4009,13 +4017,13 @@ static char *wrapText(TextWidget tw, char *startLine, char *text, int bufOffset,
     lineStartPos = 0;
     limitPos = breakBefore == NULL ? startLineLen : 0;
     while (pos < wrapBuf->length) {
-        next = BufNextCharacter(wrapBuf, pos);
+        next = BufNextGrapheme(wrapBuf, pos);
     	c = BufGetCharacter(wrapBuf, pos);
     	if (c == '\n') {
     	    lineStartPos = limitPos = pos + 1;
     	    colNum = 0;
     	} else {
-            colNum += BufCodepointWidth(wrapBuf, pos, colNum);
+            colNum += BufGraphemeWidth(wrapBuf, pos, colNum);
     	    if (colNum > wrapMargin) {
     		if (!wrapLine(tw, wrapBuf, bufOffset, lineStartPos, pos,
     		    	limitPos, &breakAt, &charsAdded)) {
@@ -4070,12 +4078,13 @@ static int wrapLine(TextWidget tw, textBuffer *buf, int bufOffset,
     
     /* Scan backward for whitespace or BOL.  If BOL, return False, no
        whitespace in line at which to wrap */
-    for (p=lineEndPos; ; p--) {
+    for (p=lineEndPos; ; p = BufPrevGrapheme(buf, p)) {
 	if (p < lineStartPos || p < limitPos)
      	    return False;
      	c = BufGetCharacter(buf, p);
-     	if (c == '\t' || c == ' ')
+        if ((c == '\t' || c == ' ') && BufNextGrapheme(buf, p) == p + 1)
      	    break;
+        if (p == 0) return False;
     }
     
     /* Create an auto-indent string to insert to do wrap.  If the auto
@@ -4084,8 +4093,10 @@ static int wrapLine(TextWidget tw, textBuffer *buf, int bufOffset,
     if (tw->text.autoIndent || tw->text.smartIndent) {
 	indentStr = createIndentString(tw, buf, bufOffset, lineStartPos,
 	    	lineEndPos, &length, &column);
-	if (column >= p-lineStartPos)
-	    indentStr[1] = '\0';
+        if (column >= BufCountDispChars(buf, lineStartPos, p)) {
+            indentStr[1] = '\0';
+            length = 1;
+        }
     } else {
     	indentStr = "\n";
     	length = 1;
