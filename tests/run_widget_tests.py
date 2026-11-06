@@ -113,6 +113,89 @@ def check_phase_one_files(env):
         print("Phase 1 CRLF/include, rectangle shift, fill, smart-indent, encoding/font/split-view and autosave checks passed.")
 
 
+def check_phase_two(env):
+    with tempfile.TemporaryDirectory(prefix="utf8-phase2-", dir=tests_dir) as temp:
+        task_dir=Path(temp)
+        prefs=task_dir / "prefs"
+        prefs.mkdir()
+        editor_env=dict(env,NEDIT_HOME=str(prefs))
+        binary=str(tests_dir.parent / "source" / "nedit")
+        path=task_dir / "macros.txt"
+        checks=[
+            ('length("é中")',5),
+            ('unicode_length("é中é𐐀")',5),
+            ('unicode_grapheme_length("é中é𐐀")',4),
+            ('unicode_substring("é中𐐀",1,2)',"中"),
+            ('unicode_substring("é中𐐀",-1)',"𐐀"),
+            ('unicode_next("é中",0)',2),
+            ('unicode_next("é中",1)',2),
+            ('unicode_next("é中",5)',5),
+            ('unicode_previous("é中",5)',2),
+            ('unicode_previous("é中",0)',0),
+            ('unicode_next_grapheme("é中",0)',3),
+            ('unicode_previous_grapheme("é中",3)',0),
+            ('unicode_previous_grapheme("é中",0)',0),
+            ('unicode_toupper("éβ𐐨")',"ÉΒ𐐀"),
+            ('unicode_tolower("ÉΒ𐐀")',"éβ𐐨"),
+            ('unicode_casefold("Straße Σς ﬃ")',"strasse σσ ffi"),
+            ('search_string("é中",".",0,"regex")',0),
+            ('search_string("é中","中",1,"case","utf8")',2),
+            ('search_string("Straße","STRASSE",0,"utf8","literal")',0),
+            ('search_string("中β","β",0,"utf8","caseWord")',-1),
+            ('replace_in_string("é中","(.)","<\\\\1>","regex","utf8")',"<é><中>"),
+            ('replace_in_string("Straße","STRASSE","yes","utf8","literal")',"yes"),
+        ]
+        command='report = ""\n'
+        for expression,expected in checks:
+            expected=json.dumps(expected,ensure_ascii=False)
+            command+=f'if ({expression} != {expected}) report = report + "FAIL: " + {json.dumps(expression,ensure_ascii=False)} + "\\n"\n'
+        command+='p = search_string("é中", ".", 0, "regex")\n'
+        command+='if ($search_end != 1) report = report + "legacy regex offsets\\n"\n'
+        command+='p = search_string("é中", ".", 0, "utf8", "regex")\n'
+        command+='if ($search_end != 2) report = report + "UTF-8 regex offsets\\n"\n'
+        command+='p = search(".", 0, "utf8", "regex")\n'
+        command+='if (p != 0 || $search_end != 2) report = report + "document search offsets\\n"\n'
+        command+='parts = split("é中β", ".", "utf8", "regex")\n'
+        command+='if (parts[] != 4) report = report + "Unicode split\\n"\n'
+        command+='string_to_clipboard("é中β")\n'
+        command+='if (clipboard_to_string() != "é中β") report = report + "macro clipboard\\n"\n'
+        command+='select_all()\nreplace_selection(report)\nsave()\nexit()\n'
+        path.write_text("é中")
+        subprocess.run([binary,"-svrname","","-utf8","-nowrap","-xrm","nedit.appendLF: False",
+                        "-do",command,str(path)],cwd=task_dir,env=editor_env,check=True,timeout=30)
+        assert path.read_bytes()==b"",path.read_text()
+        # Repeated Unicode matches exercise the bulk subject maps.
+        data=("é中β\n"*20000).encode()
+        path.write_bytes(data)
+        began=time.monotonic()
+        subprocess.run([binary,"-svrname","","-utf8","-nowrap","-xrm","nedit.appendLF: False",
+                        "-do",'value = replace_in_string(get_range(0,$text_length), "é", "É", "utf8", "case")\nselect_all()\nreplace_selection(value)\nsave()\nexit()\n',str(path)],
+                       cwd=task_dir,env=editor_env,check=True,timeout=30)
+        assert path.read_bytes()==("É中β\n"*20000).encode(),"Bulk Unicode literal replacement failed"
+        print(f"20,000 Unicode replacements: {time.monotonic()-began:.2f} seconds.")
+        # Shell filters exchange original document bytes; UTF-8-aware tools opt
+        # in themselves. No editor-side transcoding or normalization is applied.
+        path.write_bytes("é β 中\n".encode()+b"\x80\n")
+        original=path.read_bytes()
+        subprocess.run([binary,"-svrname","","-utf8","-nowrap","-xrm","nedit.appendLF: False",
+                        "-do",'select_all()\nfilter_selection("cat")\nsave()\nexit()\n',str(path)],
+                       cwd=task_dir,env=editor_env,check=True,timeout=30)
+        assert path.read_bytes()==original,"Shell filter changed UTF-8/malformed bytes"
+        # Include actual syntax matches throughout a large buffer, which catches
+        # decoding the complete document separately for each highlighting match.
+        data="αβ 中中 𐐀\n".encode()*60000
+        path.write_bytes(data)
+        patterns='C:1:0{Greek:"[α-ω]+":::Keyword::\nCJK:"中+":::String::\n}'
+        began=time.monotonic()
+        subprocess.run([binary,"-svrname","","-utf8","-nowrap","-lm","C",
+                        "-xrm","nedit.appendLF: False","-xrm","nedit.highlightPatterns: "+patterns.replace("\n", "\\n"),
+                        "-do",'end_of_file()\ninsert_string("β")\ndelete_previous_character()\nsave()\nexit()\n',str(path)],
+                       cwd=task_dir,env=editor_env,check=True,timeout=30)
+        assert path.read_bytes()==data,"Large highlighted file changed"
+        print(f"{len(data)/1000000:.1f} MB Unicode syntax open/edit/save: {time.monotonic()-began:.2f} seconds.")
+        print("Unicode macro APIs, legacy byte APIs, search/split flags, clipboard and shell-filter round trips passed.")
+
+
 tests_dir = Path(__file__).resolve().parent
 with tempfile.TemporaryFile(mode="w+") as log:
     server = subprocess.Popen(
@@ -135,6 +218,7 @@ with tempfile.TemporaryFile(mode="w+") as log:
         check_application_controls(env)
         check_editor(env)
         check_phase_one_files(env)
+        check_phase_two(env)
     finally:
         server.terminate()
         try:

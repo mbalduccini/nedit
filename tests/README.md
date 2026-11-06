@@ -36,8 +36,9 @@ Latin, Greek, CJK, supplementary scalars and combining sequences, verifying
 original bytes and Motif character counts. Real Find button callbacks check
 literal and literal-text regex matches; Replace and incremental search verify
 their resulting edits/selections. Motif-to-editor clipboard paste, encoding/font
-restoration and shared-field tab switching are covered. These checks do not
-imply Unicode regex operators or Unicode case folding.
+restoration and shared-field tab switching are covered. Phase 2 checks also
+exercise Unicode regex operators, case folding and word boundaries, as described
+below.
 
 The full editor check opens a temporary file, edits its supplementary scalar
 through real actions, saves, reopens, and verifies unchanged UTF-8, malformed
@@ -57,3 +58,19 @@ lookup supplies the XBufferOverflow contract to verify a 60-byte commit retry.
 The suite reports cached cursor/hit-test timings for a 200 KB line and a full
 open/edit/save timing for a 2.2 MB file. The sanitizer target covers the standalone
 decoder/buffer/layout and rectangular operations with ASan and UBSan.
+
+Phase 2 tests cover the proprietary Unicode regex dialect, scalar quantifiers,
+compact ranges, Unicode shortcut classes, case pairs, lookahead/lookbehind,
+backreferences, captures, replacement case tokens, boundary-safe truncation,
+malformed bytes and legacy one-byte matching. ASan/UBSan cover both engines.
+Application tests exercise foreign PRIMARY owners offering only STRING,
+COMPOUND_TEXT or UTF8_STRING, primary move/delete ordering, secondary quick move
+through Motif destination and foreign fallback-only clients, multi-string
+COMPOUND_TEXT decoding, clipboard conversion and refused lossy conversion.
+Search checks include full-fold expansions, composed/decomposed distinction,
+whole-word wrapping, selection-to-search and replacement. Immediate/deferred
+syntax patterns are checked after edits and mode switches for uniform styles
+across scalars. Calltip fonts restore in legacy mode. Real macros check each
+Unicode API, byte compatibility, search/split flags and clipboard; shell-filter
+round trips preserve malformed bytes. A 1 MB file with Unicode syntax matches
+measures open/edit/save performance on the isolated display.

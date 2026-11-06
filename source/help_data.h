@@ -2,10 +2,10 @@
 *                                                                              *
 * help_data.h --  Nirvana Editor help module data                              *
 *                                                                              *
-                 Generated on Jan 14, 2017 (Do NOT edit!)
+                 Generated on Nov 5, 2026 (Do NOT edit!)
                  Source of content from file help.etx
 *                                                                              *
-* Copyright (c) 1999-2017 Mark Edel                                            *
+* Copyright (c) 1999-2026 Mark Edel                                            *
 *                                                                              *
 * This is free software; you can redistribute it and/or modify it under the    *
 * terms of the GNU General Public License as published by the Free Software    *
@@ -2567,6 +2567,36 @@ static char * htxt_macro_subrs [] = {
 "\01A\01Btoupper( string )\01A\n",
 "\01IReturn an all upper-case version of string. ",
 "\n\n",
+"\01A\01Bunicode_length( string )\01A, \01Bunicode_grapheme_length( string )\01A\n",
+"\01ICount Unicode scalar values or extended grapheme clusters. Each malformed ",
+"byte counts as a separate unit. Existing length() continues to count bytes. ",
+"\n\n",
+"\01A\01Bunicode_substring( string, start [, end] )\01A\n",
+"\01IExtract text using scalar indices, with an exclusive end. Negative indices ",
+"count from the end. Indices clamp to the string; omitted end means its end. ",
+"\n\n",
+"\01A\01Bunicode_next( string, byte_offset )\01A, \01Bunicode_previous( string, byte_offset )\01A\n",
+"\01Bunicode_next_grapheme( string, byte_offset )\01A\n",
+"\01Bunicode_previous_grapheme( string, byte_offset )\01A\n",
+"\01ITraverse scalar or grapheme boundaries, returning byte offsets. Next at end ",
+"and previous at zero stay there. Offsets inside a unit move to its end/start. ",
+"\n\n",
+"\01A\01Bunicode_toupper( string )\01A, \01Bunicode_tolower( string )\01A\n",
+"\01Bunicode_casefold( string )\01A\n",
+"\01ISimple Unicode upper/lower mappings or full Unicode case folding. Text is ",
+"not normalized and malformed bytes are preserved. Locale-specific casing ",
+"is not applied. These Unicode functions require a build with utf8proc. ",
+"\n\n",
+"search() follows the document encoding. search_string(), replace_in_string() ",
+"and split() accept an optional \"utf8\" argument with their other optional ",
+"arguments. Search positions remain bytes; regex quantifiers/classes count ",
+"scalars and case-insensitive regex uses simple folding. Literal search uses ",
+"full folding, including multi-scalar expansions. Existing byte-based macro ",
+"APIs, smart-indent offsets and shell-filter input/output remain unchanged. ",
+"Byte-oriented custom programs can still split UTF-8 sequences; use Unicode ",
+"traversal when making character edits. Shell tools must support UTF-8 when ",
+"transforming text. No implicit normalization or transcoding is performed. ",
+"\n\n",
 "\01A\01Bvalid_number( string )\01A\n",
 "\01IReturns 1 if the string can be converted to a number without error ",
 "following the same rules that the implicit conversion would. Otherwise 0. ",
@@ -4110,19 +4140,28 @@ static char * htxt_resources [] = {
 "cursor, makes the cursor in the text editing area of the window heavier and ",
 "darker. ",
 "\n\n",
-"nedit.utf8: False\n\n",
-"Interpret newly opened documents as UTF-8. Preferences > UTF-8 Document switches ",
-"the current document without changing bytes. Default Settings > UTF-8 by Default ",
-"sets new-document policy; Save Defaults persists it. Cursor movement, deletion, ",
-"selection and column edits preserve whole graphemes. Wide characters use two ",
-"logical columns, combining marks zero; tabs use logical stops and font advances ",
-"determine pixels. Rectangle edges never split graphemes. Search, clipboard, ",
-"Unicode macro APIs and complex-script shaping remain follow-on work.\n\n",
-"nedit.utf8Font: monospace:size=12\n\n",
-"Preferences > UTF-8 Font lists Fontconfig families and accepts a size with ",
-"Apply/OK. The Default Settings entry sets new-document fonts. Legacy Text Fonts ",
-"continues to configure XLFD fonts. CLI: -utf8, -8bit and -utf8font family:size=n. ",
-"Use a UTF-8 locale for typed text and -svrname '' for a standalone instance.\n\n",
+"\01A\01Bnedit.utf8\01A: False\n",
+"\01I\n",
+"Interpret newly opened documents as UTF-8. Preferences > UTF-8 Document ",
+"switches the current document without changing its bytes. Default Settings ",
+"> UTF-8 by Default sets new-document policy. Save Defaults persists it. ",
+"UTF-8 cursor movement, deletion, selections and column edits preserve whole ",
+"graphemes. Wide characters use two logical columns and combining marks zero; ",
+"tabs use logical stops and font advances determine pixel layout. Rectangle ",
+"edges never split a grapheme; insertion snaps after a straddling wide glyph. ",
+"Search and syntax patterns use Unicode scalars; literal search has full case ",
+"folding and regex has simple case folding. Clipboard transfers negotiate ",
+"UTF8_STRING, COMPOUND_TEXT and Latin-1 STRING. Unicode case commands, macro ",
+"APIs and calltips are supported. Shaping, bidi and printing remain follow-on ",
+"work. Use a UTF-8 locale for typed text. ",
+"\n\n",
+"\01A\01Bnedit.utf8Font\01A: monospace:size=12\n",
+"\01I\n",
+"Fontconfig family and size for UTF-8 documents, independent of legacy XLFD ",
+"Text Fonts. Preferences > UTF-8 Font lists installed families, accepts size ",
+"changes and provides Apply/OK. Its Default Settings entry sets new-document ",
+"fonts. Normal, bold, italic and bold-italic syntax faces derive from the family. ",
+"\n\n",
 "\01A\01Bnedit.autoScrollVPadding\01A: 4\n",
 "\01I\n",
 "Number of lines to keep the cursor away from the top or bottom line of the ",
@@ -4699,6 +4738,14 @@ static char * htxt_command_line [] = {
 "\n\n",
 "\01A\01B-columns n\01A\n",
 "\01IDefault width in characters for an editing window. ",
+"\n\n",
+"\01A\01B-utf8\01A, \01B-8bit\01A\n",
+"\01I\n",
+"Select UTF-8 or legacy single-byte document interpretation; default is legacy. ",
+"\n\n",
+"\01A\01B-utf8font family:size=n\01A\n",
+"\01I\n",
+"Set the UTF-8 Fontconfig font, for example monospace:size=12. ",
 "\n\n",
 "\01A\01B-font font (or -fn font)\01A\n",
 "\01IFont for text being edited (Font for menus and dialogs can be set with -xrm ",
@@ -5761,4 +5808,4 @@ Href H_R [] =
     {NULL,     14799, HELP_PREFERENCES,   "Autoload Files"}
 };
 
-static const char * NEditVersion = "NEdit 5.7\nJan 14, 2017\n";
+static const char * NEditVersion = "NEdit 5.7 classic-UTF-8\nNov 5, 2026\n";

@@ -1776,6 +1776,7 @@ void SetDocumentEncoding(WindowInfo *window, int utf8)
     if (utf8) return;
 #endif
     if (window->buffer->encoding == (utf8 ? BUF_ENCODING_UTF8 : BUF_ENCODING_8BIT)) return;
+    if (window->highlightData) StopHighlighting(window);
     BufSetEncoding(window->buffer, utf8 ? BUF_ENCODING_UTF8 : BUF_ENCODING_8BIT);
     for (i = 0; i <= window->nPanes; i++) {
         text = i ? window->textPanes[i - 1] : window->textArea;
@@ -1783,6 +1784,7 @@ void SetDocumentEncoding(WindowInfo *window, int utf8)
     }
     if (window->buffer->primary.selected && !window->buffer->primary.rectangular)
         BufSelect(window->buffer, window->buffer->primary.start, window->buffer->primary.end);
+    if (window->highlightSyntax) StartHighlighting(window, False);
     RefreshMenuToggleStates(window);
     RefreshSearchDialogFonts(window);
     UpdateMinPaneHeights(window);

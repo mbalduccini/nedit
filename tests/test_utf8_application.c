@@ -7,6 +7,13 @@
 #include "textDrag.h"
 #include "undo.h"
 #include "search.h"
+#include "selectionCodec.h"
+#include "textSel.h"
+#include "highlight.h"
+#include "highlightData.h"
+#include "shift.h"
+#include "utf8.h"
+#include "calltips.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +35,9 @@ static Time serverTime(Widget w)
     XChangeProperty(display, window, property, XA_STRING, 8, PropModeReplace,
             (unsigned char *)"", 0);
     XWindowEvent(display, window, PropertyChangeMask, &event);
+    XPutBackEvent(display,&event);
+    XtAppNextEvent(XtWidgetToApplicationContext(w),&event);
+    XtDispatchEvent(&event);
     XDestroyWindow(display, window);
     return event.xproperty.time;
 }
@@ -77,6 +87,397 @@ static void checkPrimaryPaste(WindowInfo *window, XEvent *event, const char *sam
     value = XmTextGetString(window->findText);
     assert(!strcmp(value, sample)); XtFree(value);
     BufUnselect(window->buffer);
+}
+
+/* Foreign clients offering one encoding exercise actual asynchronous fallback. */
+static Atom foreignTarget;
+static const char *foreignText;
+static int foreignUtf8, foreignDeleted;
+static Boolean foreignSelection(Widget w, Atom *selection, Atom *target, Atom *type,
+                                XtPointer *value, unsigned long *length, int *format)
+{
+    (void)selection;
+    if (*target == XInternAtom(XtDisplay(w), "DELETE", False)) {
+        foreignDeleted = 1;
+        *type = *target;
+        *format = 8;
+        *length = 0;
+        *value = NULL;
+        return True;
+    }
+    if (*target != foreignTarget)
+        return False;
+    *value = EncodeSelectionText(XtDisplay(w), foreignText, strlen(foreignText),
+                                 foreignUtf8, *target, length);
+    *type = *target;
+    *format = 8;
+    return *value != NULL;
+}
+static void waitForPaste(WindowInfo *window, int move)
+{
+    XtAppContext app = XtWidgetToApplicationContext(window->shell);
+    int expired = 0;
+    XtIntervalId timer = XtAppAddTimeOut(app, 2000, pasteTimeout, &expired);
+    while (!expired && (!window->buffer->length || (move && !foreignDeleted)))
+        XtAppProcessEvent(app, XtIMAll);
+    if (!expired)
+        XtRemoveTimeOut(timer);
+    assert(!expired);
+}
+static void checkSelectionCodecs(WindowInfo *window)
+{
+    Display *d = XtDisplay(window->shell);
+    Atom utf8 = XInternAtom(d, "UTF8_STRING", False);
+    Atom compound = XInternAtom(d, "COMPOUND_TEXT", False);
+    char *encoded, *decoded, *value;
+    XTextProperty property;
+    char *parts[] = {"café", "β 中"};
+    unsigned long size, length;
+    int i;
+    Atom targets[3];
+    targets[0] = utf8;
+    targets[1] = compound;
+    targets[2] = XA_STRING;
+    encoded = EncodeSelectionText(d, "café", 5, True, XA_STRING, &size);
+    assert(encoded && size == 4 && !memcmp(encoded, "caf\351", 4));
+    decoded = DecodeSelectionText(d, encoded, size, XA_STRING, True, &length);
+    assert(decoded && length == 5 && !strcmp(decoded, "café"));
+    free(decoded);
+    free(encoded);
+    assert(!EncodeSelectionText(d, "中", 3, True, XA_STRING, &size));
+    assert(!DecodeSelectionText(d, "中", 3, utf8, False, &size));
+    encoded = EncodeSelectionText(d, "caf\351", 4, False, utf8, &size);
+    assert(encoded && size == 5 && !strcmp(encoded, "café"));
+    free(encoded);
+    encoded =
+        EncodeSelectionText(d, "café β 中", strlen("café β 中"), True, compound, &size);
+    assert(encoded);
+    decoded = DecodeSelectionText(d, encoded, size, compound, True, &length);
+    assert(decoded && !strcmp(decoded, "café β 中"));
+    free(decoded);
+    free(encoded);
+    assert(Xutf8TextListToTextProperty(d, parts, 2, XCompoundTextStyle, &property) ==
+           Success);
+    decoded = DecodeSelectionText(d, (char *)property.value, property.nitems, compound,
+                                  True, &length);
+    assert(decoded && length == strlen(parts[0]) + 1 + strlen(parts[1]) &&
+           !memcmp(decoded, "café\0β 中", length));
+    free(decoded);
+    XFree(property.value);
+    assert(!EncodeSelectionText(d, "é\0β", 5, True, compound, &size));
+    /* Embedded NULs and malformed bytes remain recoverable in UTF8_STRING. */
+    encoded = EncodeSelectionText(d, "é\0\200", 4, True, utf8, &size);
+    decoded = DecodeSelectionText(d, encoded, size, utf8, True, &length);
+    assert(decoded && length == 4 && !memcmp(decoded, "é\0\200", 4));
+    free(decoded);
+    free(encoded);
+    for (i = 0; i < 3; i++) {
+        BufSetAll(window->buffer, "");
+        TextSetCursorPos(window->textArea, 0);
+        foreignTarget = targets[i];
+        foreignUtf8 = i != 2;
+        foreignText = i == 2 ? "caf\351" : "café β 中";
+        foreignDeleted = 0;
+        assert(XtOwnSelection(window->findText, XA_PRIMARY,
+                              serverTime(window->findText), foreignSelection, NULL,
+                              NULL));
+        InsertPrimarySelection(window->textArea, CurrentTime, False);
+        waitForPaste(window, False);
+        value = BufGetAll(window->buffer);
+        assert(!strcmp(value, i == 2 ? "café" : "café β 中"));
+        free(value);
+        BufSetAll(window->buffer, "");
+        TextSetCursorPos(window->textArea, 0);
+        MovePrimarySelection(window->textArea, CurrentTime, False);
+        waitForPaste(window, True);
+        value = BufGetAll(window->buffer);
+        assert(!strcmp(value, i == 2 ? "café" : "café β 中"));
+        free(value);
+        XtDisownSelection(window->findText, XA_PRIMARY, CurrentTime);
+    }
+    assert(PutClipboardText(window->textArea, serverTime(window->textArea), "caf\351",
+                            4, False));
+    value = GetClipboardText(window->textArea, True, &length);
+    assert(value && !strcmp(value, "café"));
+    free(value);
+    assert(PutClipboardText(window->textArea, serverTime(window->textArea), "café β 中",
+                            strlen("café β 中"), True));
+    value = GetClipboardText(window->textArea, True, &length);
+    assert(value && !strcmp(value, "café β 中"));
+    free(value);
+    puts("X PRIMARY fallback/move, STRING Latin-1, COMPOUND_TEXT, UTF8_STRING and "
+         "clipboard conversion passed.");
+}
+/* A foreign Motif destination accepts only the requested fallback target. */
+static char *foreignReceived;
+static int foreignReceiveDone, foreignAttempts;
+static Atom attemptedTargets[3];
+static void receiveSecondary(Widget w, XtPointer arg, Atom *selection, Atom *type,
+                             XtPointer value, unsigned long *length, int *format)
+{
+    (void)arg;
+    (void)selection;
+    if (value && *format == 8)
+        foreignReceived =
+            DecodeSelectionText(XtDisplay(w), value, *length, *type, True, length);
+    XtFree(value);
+    foreignReceiveDone = 1;
+}
+static Boolean foreignDestination(Widget w, Atom *selection, Atom *target, Atom *type,
+                                  XtPointer *value, unsigned long *length, int *format)
+{
+    XSelectionRequestEvent *request = XtGetSelectionRequest(w, *selection, 0);
+    Display *display = XtDisplay(w);
+    Atom propertyType, *pair = NULL;
+    unsigned long items, remaining;
+    int propertyFormat;
+    XEvent event;
+    if (*target != XInternAtom(display, "INSERT_SELECTION", False))
+        return False;
+    assert(XGetWindowProperty(display, request->requestor, request->property, 0, 2,
+                              False, AnyPropertyType, &propertyType, &propertyFormat,
+                              &items, &remaining, (unsigned char **)&pair) == Success);
+    assert(propertyFormat == 32 && items == 2 && foreignAttempts < 3);
+    attemptedTargets[foreignAttempts++] = pair[1];
+    if (pair[1] != foreignTarget) {
+        XFree(pair);
+        return False;
+    }
+    foreignReceiveDone = 0;
+    XtGetSelectionValue(w, pair[0], pair[1], receiveSecondary, NULL, request->time);
+    XFree(pair);
+    while (!foreignReceiveDone) {
+        XtAppNextEvent(XtWidgetToApplicationContext(w), &event);
+        XtDispatchEvent(&event);
+    }
+    *type = *target;
+    *value = NULL;
+    *length = 0;
+    *format = 8;
+    return foreignReceived != NULL;
+}
+static void checkSecondarySelection(WindowInfo *window)
+{
+    WindowInfo *destination = CreateDocument(window, "secondary-destination");
+    XtAppContext app = XtWidgetToApplicationContext(window->shell);
+    int expired = 0;
+    XtIntervalId timer;
+    char *text;
+    int i;
+    Atom targets[3];
+    targets[0] = XInternAtom(XtDisplay(window->shell), "UTF8_STRING", False);
+    targets[1] = XInternAtom(XtDisplay(window->shell), "COMPOUND_TEXT", False);
+    targets[2] = XA_STRING;
+    SetDocumentEncoding(destination, True);
+    BufSetAll(destination->buffer, "");
+    TextSetCursorPos(destination->textArea, 0);
+    TakeMotifDestination(destination->textArea, serverTime(destination->textArea));
+    BufSetAll(window->buffer, "é β 中");
+    BufSecondarySelect(window->buffer, 0, window->buffer->length);
+    SendSecondarySelection(window->textArea, serverTime(window->textArea), True);
+    timer = XtAppAddTimeOut(app, 2000, pasteTimeout, &expired);
+    while (!expired &&
+           (!destination->buffer->length || window->buffer->secondary.selected))
+        XtAppProcessEvent(app, XtIMAll);
+    if (!expired)
+        XtRemoveTimeOut(timer);
+    assert(!expired && window->buffer->length == 0);
+    text = BufGetAll(destination->buffer);
+    assert(!strcmp(text, "é β 中"));
+    free(text);
+    CloseWindow(destination);
+    RaiseDocument(window);
+    for (i = 1; i < 3; i++) {
+        foreignTarget = targets[i];
+        foreignAttempts = 0;
+        foreignReceived = NULL;
+        expired = 0;
+        assert(XtOwnSelection(
+            window->findText,
+            XInternAtom(XtDisplay(window->shell), "MOTIF_DESTINATION", False),
+            serverTime(window->findText), foreignDestination, NULL, NULL));
+        BufSetAll(window->buffer, i == 1 ? "é β 中" : "café");
+        BufSecondarySelect(window->buffer, 0, window->buffer->length);
+        SendSecondarySelection(window->textArea, serverTime(window->textArea), True);
+        timer = XtAppAddTimeOut(app, 2000, pasteTimeout, &expired);
+        while (!expired && window->buffer->secondary.selected)
+            XtAppProcessEvent(app, XtIMAll);
+        if (!expired)
+            XtRemoveTimeOut(timer);
+        assert(!expired && window->buffer->length == 0 && foreignAttempts == i + 1);
+        assert(foreignReceived && !strcmp(foreignReceived, i == 1 ? "é β 中" : "café"));
+        free(foreignReceived);
+        foreignReceived = NULL;
+        assert(attemptedTargets[0] == targets[0] && attemptedTargets[1] == targets[1]);
+        if (i == 2)
+            assert(attemptedTargets[2] == targets[2]);
+        XtDisownSelection(
+            window->findText,
+            XInternAtom(XtDisplay(window->shell), "MOTIF_DESTINATION", False),
+            CurrentTime);
+    }
+    puts("Secondary quick move preserves Unicode text, including foreign-client "
+         "fallback.");
+}
+static void checkUnicodeSearch(WindowInfo *window)
+{
+    int start, end, bw, fw, copyStart, copyEnd, replacedLength;
+    char *replaced;
+    const char *text = "Straße Σς 中文 éé\n𐐀";
+    assert(SearchString(text, "STRASSE", SEARCH_FORWARD, SEARCH_LITERAL | SEARCH_UTF8,
+                        False, 0, &start, &end, &bw, &fw, NULL) &&
+           start == 0 && end == 7);
+    assert(SearchString(text, "σσ", SEARCH_FORWARD, SEARCH_LITERAL | SEARCH_UTF8, False,
+                        0, &start, &end, NULL, NULL, NULL) &&
+           start == 8 && end == 12);
+    assert(!SearchString("ß", "s", SEARCH_FORWARD, SEARCH_LITERAL | SEARCH_UTF8, False,
+                         0, &start, &end, NULL, NULL, NULL));
+    assert(!SearchString("é", "é", SEARCH_FORWARD, SEARCH_LITERAL | SEARCH_UTF8, False,
+                         0, &start, &end, NULL, NULL, NULL));
+    assert(SearchString("β xβ", "β", SEARCH_FORWARD,
+                        SEARCH_CASE_SENSE_WORD | SEARCH_UTF8, True, 3, &start, &end,
+                        NULL, NULL, " ") &&
+           start == 0 && end == 2);
+    assert(SearchString("xβ β", "β", SEARCH_BACKWARD,
+                        SEARCH_CASE_SENSE_WORD | SEARCH_UTF8, True, 1, &start, &end,
+                        NULL, NULL, " ") &&
+           start == 4 && end == 6);
+    assert(!SearchString("中β", "β", SEARCH_FORWARD,
+                         SEARCH_CASE_SENSE_WORD | SEARCH_UTF8, False, 0, &start, &end,
+                         NULL, NULL, " "));
+    assert(SearchString("é中", ".", SEARCH_FORWARD, SEARCH_REGEX | SEARCH_UTF8, False,
+                        1, &start, &end, NULL, NULL, NULL) &&
+           start == 2 && end == 5);
+    replaced = ReplaceAllInString("é中β", "(.)", "\\U\\1", SEARCH_REGEX | SEARCH_UTF8,
+                                  &copyStart, &copyEnd, &replacedLength, NULL);
+    assert(replaced && copyStart == 0 && copyEnd == 7 && !strcmp(replaced, "É中Β"));
+    free(replaced);
+    replaced = ReplaceAllInString("é中", "(?=.)", "|", SEARCH_REGEX | SEARCH_UTF8,
+                                  &copyStart, &copyEnd, &replacedLength, NULL);
+    assert(replaced && copyStart == 0 && copyEnd == 2 && !strcmp(replaced, "|é|"));
+    free(replaced);
+    while (XtAppPending(XtWidgetToApplicationContext(window->shell)))
+        XtAppProcessEvent(XtWidgetToApplicationContext(window->shell), XtIMAll);
+    SetDocumentEncoding(window, True);
+    BufSetAll(window->buffer, "é中β");
+    TextSetCursorPos(window->lastFocus, 0);
+    BufSelect(window->buffer, 0, 2);
+    assert(
+        SearchAndReplace(window, SEARCH_FORWARD, "(.)", "\\U\\1", SEARCH_REGEX, False));
+    replaced = BufGetAll(window->buffer);
+    assert(!strcmp(replaced, "É中β"));
+    free(replaced);
+    serverTime(window->textArea);
+    BufSelect(window->buffer, 0, window->buffer->length);
+    assert(window->buffer->primary.selected);
+    UpcaseSelection(window);
+    replaced = BufGetAll(window->buffer);
+    assert(!strcmp(replaced, "É中Β"));
+    free(replaced);
+    DowncaseSelection(window);
+    replaced = BufGetAll(window->buffer);
+    assert(!strcmp(replaced, "é中β"));
+    free(replaced);
+    BufSetAll(window->buffer, "β β");
+    TextSetCursorPos(window->lastFocus, 0);
+    serverTime(window->textArea);
+    BufSelect(window->buffer, 0, 2);
+    SearchForSelected(window, SEARCH_FORWARD, SEARCH_CASE_SENSE, False, CurrentTime);
+    {
+        XtAppContext app = XtWidgetToApplicationContext(window->shell);
+        int expired = 0;
+        XtIntervalId timer = XtAppAddTimeOut(app, 2000, pasteTimeout, &expired);
+        while (!expired && window->buffer->primary.start != 3)
+            XtAppProcessEvent(app, XtIMAll);
+        if (!expired)
+            XtRemoveTimeOut(timer);
+        assert(!expired && window->buffer->primary.end == 5);
+    }
+    BufSetAll(window->buffer, "é中β");
+    serverTime(window->textArea);
+    BufSelect(window->buffer, 0, window->buffer->length);
+    ReplaceInSelection(window, "(.)", "<\\1>", SEARCH_REGEX);
+    replaced = BufGetAll(window->buffer);
+    assert(!strcmp(replaced, "<é><中><β>"));
+    free(replaced);
+    puts("Unicode literal full folding/whole-word wrap, scalar regex replacement, and "
+         "menu case conversion passed.");
+}
+static void assertScalarStyles(WindowInfo *window)
+{
+    const char *text=BufAsString(window->buffer);
+    int p=0,n,i,style;
+    while(p<window->buffer->length) {
+        n=Utf8Decode(text+p,window->buffer->length-p,NULL,NULL);
+        style=HighlightCodeOfPos(window,p);
+        for(i=1;i<n;i++) assert(HighlightCodeOfPos(window,p+i)==style);
+        p+=n;
+    }
+}
+static void checkUnicodeHighlighting(WindowInfo *window)
+{
+    char patterns[]="C:1:0{\nGreek:\"[α-ω]+\":::Keyword::\n"
+        "CJK:\"(中+)\":::String::D\nZero:\"(?=𐐀)\":::Comment::D\n}";
+    int style;
+    StopHighlighting(window);
+    assert(LoadHighlightString(patterns,False));
+    SetLanguageMode(window,FindLanguageMode("C"),False);
+    BufSetAll(window->buffer,"αβ 中中 𐐀\nβ 中\n");StartHighlighting(window,False);
+    assert(window->highlightData);
+    assertScalarStyles(window);
+    style=HighlightCodeOfPos(window,0);
+    assert(!strcmp(HighlightStyleOfCode(window,style),"Keyword"));
+    style=HighlightCodeOfPos(window,5);
+    assert(!strcmp(HighlightStyleOfCode(window,style),"String"));
+    BufInsert(window->buffer,2,"γ");assertScalarStyles(window);
+    BufRemove(window->buffer,2,4);assertScalarStyles(window);
+    BufReplace(window->buffer,5,8,"𐐀");assertScalarStyles(window);
+    SetDocumentEncoding(window,False);SetDocumentEncoding(window,True);
+    assertScalarStyles(window);
+    StopHighlighting(window);
+    {
+        char contextPatterns[]="C:0:2{Context:\"(?<=中{2})β\":::Keyword::\n}";
+        assert(LoadHighlightString(contextPatterns,False));
+        BufSetAll(window->buffer,"中中β");StartHighlighting(window,False);
+        assert(!strcmp(HighlightStyleOfCode(window,HighlightCodeOfPos(window,6)),"Keyword"));
+        BufReplace(window->buffer,0,3,"文");assertScalarStyles(window);
+        assert(strcmp(HighlightStyleOfCode(window,HighlightCodeOfPos(window,6)),"Keyword"));
+        BufReplace(window->buffer,0,3,"中");assertScalarStyles(window);
+        assert(!strcmp(HighlightStyleOfCode(window,HighlightCodeOfPos(window,6)),"Keyword"));
+    }
+    StopHighlighting(window);SetLanguageMode(window,PLAIN_LANGUAGE_MODE,False);
+    puts("Unicode immediate/deferred syntax patterns, zero-width progress, scalar contexts, incremental edits, and encoding changes passed.");
+}
+static int renditionType(Widget w)
+{
+    XmRenderTable table;
+    XmRendition rendition;
+    XmStringTag *tags;
+    Arg arg;
+    int count,i,type;
+    XtVaGetValues(w,XmNrenderTable,&table,NULL);
+    count=XmRenderTableGetTags(table,&tags);assert(count);
+    rendition=XmRenderTableGetRendition(table,tags[0]);assert(rendition);
+    XtSetArg(arg,XmNfontType,&type);XmRenditionRetrieve(rendition,&arg,1);
+    XmRenditionFree(rendition);
+    for(i=0;i<count;i++) XtFree(tags[i]);XtFree((char *)tags);
+    return type;
+}
+static void checkUnicodeCalltip(WindowInfo *window)
+{
+    textDisp *display=((TextWidget)window->lastFocus)->text.textD;
+    int tip,legacy;
+    SetDocumentEncoding(window,False);
+    tip=ShowCalltip(window,"Legacy",False,0,TIP_LEFT,TIP_BELOW,TIP_SLOPPY);assert(tip);
+    legacy=renditionType(display->calltipW);KillCalltip(window,tip);
+    SetDocumentEncoding(window,True);
+    tip=ShowCalltip(window,"café β 中",False,0,TIP_LEFT,TIP_BELOW,TIP_SLOPPY);assert(tip);
+    assert(renditionType(display->calltipW)==XmFONT_IS_XFT);KillCalltip(window,tip);
+    SetDocumentEncoding(window,False);
+    tip=ShowCalltip(window,"Legacy",False,0,TIP_LEFT,TIP_BELOW,TIP_SLOPPY);assert(tip);
+    assert(renditionType(display->calltipW)==legacy);KillCalltip(window,tip);
+    SetDocumentEncoding(window,True);
+    puts("Unicode calltip font and legacy font restoration passed.");
 }
 
 static void captureSearchField(Widget field)
@@ -284,6 +685,11 @@ void __wrap_XtAppMainLoop(XtAppContext app)
     bytes = BufGetAll(buf);
     assert(!strcmp(bytes, initial)); free(bytes);
     checkSearchDialog(window);
+    checkSelectionCodecs(window);
+    checkSecondarySelection(window);
+    checkUnicodeSearch(window);
+    checkUnicodeHighlighting(window);
+    checkUnicodeCalltip(window);
     /* Exercise drag completion with the application's real undo callbacks. */
     for (type = DRAG_COPY; type <= DRAG_OVERLAY_COPY; type++) {
         TextWidget tw = (TextWidget)window->textArea;

@@ -2740,6 +2740,36 @@ Macro Subroutines
 **toupper( string )**
   Return an all upper-case version of string.
 
+**unicode_length( string )**, **unicode_grapheme_length( string )**
+  Count Unicode scalar values or extended grapheme clusters. Each malformed
+  byte counts as a separate unit. Existing length() continues to count bytes.
+
+**unicode_substring( string, start [, end] )**
+  Extract text using scalar indices, with an exclusive end. Negative indices
+  count from the end. Indices clamp to the string; omitted end means its end.
+
+**unicode_next( string, byte_offset )**, **unicode_previous( string, byte_offset )**
+**unicode_next_grapheme( string, byte_offset )**
+**unicode_previous_grapheme( string, byte_offset )**
+  Traverse scalar or grapheme boundaries, returning byte offsets. Next at end
+  and previous at zero stay there. Offsets inside a unit move to its end/start.
+
+**unicode_toupper( string )**, **unicode_tolower( string )**
+**unicode_casefold( string )**
+  Simple Unicode upper/lower mappings or full Unicode case folding. Text is
+  not normalized and malformed bytes are preserved. Locale-specific casing
+  is not applied. These Unicode functions require a build with utf8proc.
+
+  search() follows the document encoding. search_string(), replace_in_string()
+  and split() accept an optional "utf8" argument with their other optional
+  arguments. Search positions remain bytes; regex quantifiers/classes count
+  scalars and case-insensitive regex uses simple folding. Literal search uses
+  full folding, including multi-scalar expansions. Existing byte-based macro
+  APIs, smart-indent offsets and shell-filter input/output remain unchanged.
+  Byte-oriented custom programs can still split UTF-8 sequences; use Unicode
+  traversal when making character edits. Shell tools must support UTF-8 when
+  transforming text. No implicit normalization or transcoding is performed.
+
 **valid_number( string )**
   Returns 1 if the string can be converted to a number without error
   following the same rules that the implicit conversion would. Otherwise 0.
@@ -4305,8 +4335,11 @@ X Resources
   graphemes. Wide characters use two logical columns and combining marks zero;
   tabs use logical stops and font advances determine pixel layout. Rectangle
   edges never split a grapheme; insertion snaps after a straddling wide glyph.
-  Search, clipboard protocols, Unicode macro APIs and complex-script shaping
-  remain separate follow-on work. Use a UTF-8 locale for typed text.
+  Search and syntax patterns use Unicode scalars; literal search has full case
+  folding and regex has simple case folding. Clipboard transfers negotiate
+  UTF8_STRING, COMPOUND_TEXT and Latin-1 STRING. Unicode case commands, macro
+  APIs and calltips are supported. Shaping, bidi and printing remain follow-on
+  work. Use a UTF-8 locale for typed text.
 
 **nedit.utf8Font**: monospace:size=12
 

@@ -157,6 +157,7 @@ typedef struct _textDisp {
     unsigned char *bgClass;		/* obtains index into bgClassPixel[] */
     
     Widget calltipW;                    /* The Label widget for the calltip */
+    XmRenderTable calltipLegacyTable;    /* Original Motif calltip font. */
     Widget calltipShell;                /* The Shell that holds the calltip */
     calltipStruct calltip;              /* The info for the calltip itself */
     Pixel calltipFGPixel;

@@ -4,7 +4,7 @@ CC = cc
 CFLAGS = -O2 -Wall -Wextra
 CPPFLAGS = -I../source -DHAVE_UTF8PROC $(shell pkg-config --cflags libutf8proc)
 
-all: test_utf8
+all: test_utf8 test_unicode_regex
 
 test_utf8: test_utf8.c ../source/utf8.c ../source/utf8.h \
         ../source/utf8Layout.c ../source/utf8Layout.h \
@@ -14,11 +14,19 @@ test_utf8: test_utf8.c ../source/utf8.c ../source/utf8.h \
 	    ../source/textBuf.c ../source/rangeset.c ../util/nedit_malloc.c \
 	    $(shell pkg-config --libs libutf8proc) -o $@
 
-check: test_utf8
+test_unicode_regex: test_unicode_regex.c ../source/regularExp.c ../source/regularExp.h \
+        ../source/unicodeRegex.c ../source/unicodeRegex.h ../source/utf8.c \
+        ../source/utf8.h ../util/nedit_malloc.c ../util/nedit_malloc.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) test_unicode_regex.c ../source/regularExp.c \
+            ../source/unicodeRegex.c ../source/utf8.c ../util/nedit_malloc.c \
+            $(shell pkg-config --libs libutf8proc) -lXt -lX11 -o $@
+
+check: test_utf8 test_unicode_regex
 	./test_utf8
+	./test_unicode_regex
 
 WIDGET_OBJECTS = ../source/text.o ../source/textDisp.o ../source/textSel.o \
-    ../source/textDrag.o ../source/textBuf.o ../source/utf8.o \
+    ../source/selectionCodec.o ../source/textDrag.o ../source/textBuf.o ../source/utf8.o \
     ../source/rangeset.o ../source/undo.o ../source/utf8Layout.o ../source/utf8Font.o
 
 widget-objects:
@@ -45,5 +53,10 @@ check-sanitize:
 	    ../source/rangeset.c ../util/nedit_malloc.c \
 	    $(shell pkg-config --libs libutf8proc) -o test_utf8_sanitize
 	./test_utf8_sanitize
+	$(CC) $(CPPFLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+            test_unicode_regex.c ../source/regularExp.c ../source/unicodeRegex.c \
+            ../source/utf8.c ../util/nedit_malloc.c \
+            $(shell pkg-config --libs libutf8proc) -lXt -lX11 -o test_unicode_regex_sanitize
+	./test_unicode_regex_sanitize
 
 .PHONY: all check check-widget check-sanitize widget-objects

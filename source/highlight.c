@@ -38,6 +38,8 @@
 #include "textP.h"
 #include "nedit.h"
 #include "regularExp.h"
+#include "utf8.h"
+#include "unicodeRegex.h"
 #include "highlightData.h"
 #include "preferences.h"
 #include "window.h"
@@ -140,7 +142,7 @@ static windowHighlightData *createHighlightData(WindowInfo *window,
 static void freeHighlightData(windowHighlightData *hd);
 static patternSet *findPatternsForWindow(WindowInfo *window, int warn);
 static highlightDataRec *compilePatterns(Widget dialogParent,
-    	highlightPattern *patternSrc, int nPatterns);
+        highlightPattern *patternSrc, int nPatterns, int regexFlags);
 static void freePatterns(highlightDataRec *patterns);
 static void handleUnparsedRegion(const WindowInfo* win, textBuffer* styleBuf,
         int pos);
@@ -153,20 +155,20 @@ static int parseBufferRange(highlightDataRec *pass1Patterns,
         reparseContext *contextRequirements, int beginParse, int endParse,
         const char *delimiters);
 static int parseString(highlightDataRec *pattern, const char **string,
-    	char **styleString, int length, char *prevChar, int anchored,
+        char **styleString, int length, unsigned int *prevChar, int anchored,
     	const char *delimiters, const char* lookBehindTo, const char* match_till);
 static void passTwoParseString(highlightDataRec *pattern, char *string,
-        char *styleString, int length, char *prevChar, const char *delimiters,
+        char *styleString, int length, unsigned int *prevChar, const char *delimiters,
         const char* lookBehindTo, const char* match_till);
 static void fillStyleString(const char **stringPtr, char **stylePtr,
-        const char *toPtr, char style, char *prevChar);
+        const char *toPtr, char style, unsigned int *prevChar);
 static void modifyStyleBuf(textBuffer *styleBuf, char *styleString,
     	int startPos, int endPos, int firstPass2Style);
 static int lastModified(textBuffer *styleBuf);
 static int max(int i1, int i2);
 static int min(int i1, int i2);
-static char getPrevChar(textBuffer *buf, int pos);
-static regexp *compileREAndWarn(Widget parent, const char *re);
+static unsigned int getPrevChar(textBuffer *buf, int pos);
+static regexp *compileREAndWarn(Widget parent, const char *re, int regexFlags);
 static int parentStyleOf(const char *parentStyles, int style);
 static int isParentStyle(const char *parentStyles, int style1, int style2);
 static int findSafeParseRestartPos(textBuffer *buf,
@@ -263,7 +265,7 @@ void StartHighlighting(WindowInfo *window, int warn)
     windowHighlightData *highlightData;
     char *stylePtr, *styleString;
     const char  *stringPtr, *bufString;
-    char prevChar = '\0';
+    unsigned int prevChar = '\0';
     int i, oldFontHeight;
     
     /* Find the pattern set matching the window's current
@@ -711,7 +713,7 @@ static windowHighlightData *createHighlightData(WindowInfo *window,
     	pass1Pats = NULL;
     else {
 	pass1Pats = compilePatterns(window->shell, pass1PatternSrc,
-    		nPass1Patterns);
+                nPass1Patterns, window->buffer->encoding == BUF_ENCODING_UTF8 ? REDFLT_UTF8 : 0);
 	if (pass1Pats == NULL)
     	    return NULL;
     }
@@ -719,7 +721,7 @@ static windowHighlightData *createHighlightData(WindowInfo *window,
     	pass2Pats = NULL;
     else {
 	pass2Pats = compilePatterns(window->shell, pass2PatternSrc,
-    		nPass2Patterns);  
+                nPass2Patterns, window->buffer->encoding == BUF_ENCODING_UTF8 ? REDFLT_UTF8 : 0);
 	if (pass2Pats == NULL)
     	    return NULL;
     }
@@ -842,7 +844,7 @@ static windowHighlightData *createHighlightData(WindowInfo *window,
 ** containing compiled regular expressions and style information.
 */
 static highlightDataRec *compilePatterns(Widget dialogParent,
-    	highlightPattern *patternSrc, int nPatterns)
+        highlightPattern *patternSrc, int nPatterns, int regexFlags)
 {
     int i, nSubExprs, patternNum, length, subPatIndex, subExprNum, charsRead;
     int parentIndex;
@@ -934,21 +936,21 @@ static highlightDataRec *compilePatterns(Widget dialogParent,
 	    compiledPats[i].startRE = NULL;
 	else {
 	    if ((compiledPats[i].startRE = compileREAndWarn(dialogParent,
-	    	    patternSrc[i].startRE)) == NULL)
+                    patternSrc[i].startRE, regexFlags)) == NULL)
    		return NULL;
     	}
     	if (patternSrc[i].endRE == NULL || compiledPats[i].colorOnly)
     	    compiledPats[i].endRE = NULL;
     	else {
     	    if ((compiledPats[i].endRE = compileREAndWarn(dialogParent,
-    	    	    patternSrc[i].endRE)) == NULL)
+                    patternSrc[i].endRE, regexFlags)) == NULL)
  		return NULL;
     	}
     	if (patternSrc[i].errorRE == NULL)
     	    compiledPats[i].errorRE = NULL;
     	else {
     	    if ((compiledPats[i].errorRE = compileREAndWarn(dialogParent,
-    	    	    patternSrc[i].errorRE)) == NULL)
+                    patternSrc[i].errorRE, regexFlags)) == NULL)
  		return NULL;
     	}
     }
@@ -1009,7 +1011,7 @@ static highlightDataRec *compilePatterns(Widget dialogParent,
 	}
 	*(ptr-1) = '\0';
 	compiledPats[patternNum].subPatternRE = CompileRE(bigPattern,
-	    	&compileMsg, REDFLT_STANDARD);
+                &compileMsg, regexFlags);
 	if (compiledPats[patternNum].subPatternRE == NULL) {
     	    fprintf(stderr, "Error compiling syntax highlight patterns:\n%s",
     	    	    compileMsg);
@@ -1289,7 +1291,8 @@ static void handleUnparsedRegion(const WindowInfo* window, textBuffer* styleBuf,
 
     reparseContext *context = &highlightData->contextRequirements;
     highlightDataRec *pass2Patterns = highlightData->pass2Patterns;
-    char *string, *styleString, *stylePtr, c, prevChar;
+    char *string, *styleString, *stylePtr, c;
+    unsigned int prevChar;
     const char *stringPtr;
     int firstPass2Style = (unsigned char)pass2Patterns[1].style;
     
@@ -1338,6 +1341,12 @@ static void handleUnparsedRegion(const WindowInfo* window, textBuffer* styleBuf,
     /* Copy the buffer range into a string */
     /* printf("callback pass2 parsing from %d thru %d w/ safety from %d thru %d\n",
     	    beginParse, endParse, beginSafety, endSafety); */
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        beginSafety = BufStartOfCharacter(buf, beginSafety);
+        endSafety = BufEndOfCharacter(buf, endSafety);
+        beginParse = BufStartOfCharacter(buf, beginParse);
+        endParse = BufEndOfCharacter(buf, endParse);
+    }
     stringPtr = string = BufGetRange(buf, beginSafety, endSafety);
     styleString = stylePtr = BufGetRange(styleBuf, beginSafety, endSafety);
     
@@ -1466,7 +1475,8 @@ static int parseBufferRange(highlightDataRec *pass1Patterns,
         reparseContext *contextRequirements, int beginParse, int endParse,
         const char *delimiters)
 {
-    char *string, *styleString, *stylePtr, *temp, prevChar;
+    char *string, *styleString, *stylePtr, *temp;
+    unsigned int prevChar;
     const char *stringPtr;
     int endSafety, endPass2Safety, startPass2Safety, tempLen;
     int modStart, modEnd, beginSafety, beginStyle, p, style;
@@ -1507,6 +1517,12 @@ static int parseBufferRange(highlightDataRec *pass1Patterns,
     else
     	endSafety = min(buf->length, BufEndOfLine(buf, endParse) + 1);
     
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        beginSafety = BufStartOfCharacter(buf, beginSafety);
+        endSafety = BufEndOfCharacter(buf, endSafety);
+        beginParse = BufStartOfCharacter(buf, beginParse);
+        endParse = BufEndOfCharacter(buf, endParse);
+    }
     /* copy the buffer range into a string */
     string = BufGetRange(buf, beginSafety, endSafety);
     styleString = BufGetRange(styleBuf, beginSafety, endSafety);
@@ -1628,17 +1644,17 @@ parseDone:
 ** the error pattern matched, if the end of the string was reached without
 ** matching the end expression, or in the unlikely event of an internal error.
 */
-static int parseString(highlightDataRec *pattern, const char **string,
-    	char **styleString, int length, char *prevChar, int anchored,
+static int parseStringInternal(highlightDataRec *pattern, const char **string,
+        char **styleString, int length, unsigned int *prevChar, int anchored,
     	const char *delimiters, const char* lookBehindTo, 
     	const char* match_till)
 {
-    int i, subExecuted, subIndex;
+    int i, subExecuted, subIndex, available;
     char *stylePtr;
     const char *stringPtr, *savedStartPtr, *startingStringPtr;
     signed char *subExpr;
-    char savedPrevChar;
-    char succChar = match_till ? (*match_till) : '\0';
+    unsigned int savedPrevChar;
+    unsigned int succChar = match_till ? (unsigned char)*match_till : 0;
     highlightDataRec *subPat = NULL, *subSubPat;
     
     if (length <= 0)
@@ -1786,7 +1802,10 @@ static int parseString(highlightDataRec *pattern, const char **string,
                zero-length matches at end of the string) */
 	    if (*stringPtr == '\0')
 		break;
-	    fillStyleString(&stringPtr, &stylePtr, stringPtr+1,
+            for(available=1;available<4 && stringPtr[available];available++);
+            fillStyleString(&stringPtr, &stylePtr, stringPtr +
+                    (pattern->subPatternRE->utf8 ?
+                    Utf8Decode(stringPtr, available, NULL, NULL) : 1),
 			pattern->style, prevChar);
 	}
     }
@@ -1808,6 +1827,20 @@ static int parseString(highlightDataRec *pattern, const char **string,
     return pattern->endRE == NULL;
 }
 
+/* Parsing does not mutate the source; share its scalar map across recursive
+   patterns and repeated matches, then release it before incremental edits. */
+static int parseString(highlightDataRec *pattern, const char **string,
+        char **styleString, int length, unsigned int *prevChar, int anchored,
+        const char *delimiters, const char *lookBehindTo, const char *match_till)
+{
+    int result, unicode = pattern->subPatternRE && pattern->subPatternRE->utf8;
+    if (unicode) BeginUtf8RegexSubject(lookBehindTo ? lookBehindTo : *string);
+    result = parseStringInternal(pattern,string,styleString,length,prevChar,
+            anchored,delimiters,lookBehindTo,match_till);
+    if (unicode) EndUtf8RegexSubject();
+    return result;
+}
+
 /*
 ** Takes a string which has already been parsed through pass1 parsing and
 ** re-parses the areas where pass two patterns are applicable.  Parameters
@@ -1815,7 +1848,7 @@ static int parseString(highlightDataRec *pattern, const char **string,
 ** indirect and string pointers are not updated.
 */
 static void passTwoParseString(highlightDataRec *pattern, char *string,
-        char *styleString, int length, char *prevChar, const char *delimiters,
+        char *styleString, int length, unsigned int *prevChar, const char *delimiters,
         const char *lookBehindTo, const char *match_till)
 {
     int inParseRegion = False;
@@ -1833,7 +1866,7 @@ static void passTwoParseString(highlightDataRec *pattern, char *string,
     	    	*s == PLAIN_STYLE || (unsigned char)*s >= firstPass2Style))) {
     	    parseEnd = c;
 	    if (parseStart != string)
-	    	*prevChar = *(parseStart-1);
+                *prevChar = (unsigned char)*(parseStart-1);
 	    stringPtr = parseStart;
 	    stylePtr = &styleString[parseStart - string];
     	    temp = *parseEnd;
@@ -1857,7 +1890,7 @@ static void passTwoParseString(highlightDataRec *pattern, char *string,
 ** routines for determining word and line boundaries at the start of the string.
 */
 static void fillStyleString(const char **stringPtr, char **stylePtr,
-    	const char *toPtr, char style, char *prevChar)
+        const char *toPtr, char style, unsigned int *prevChar)
 {
     int i, len = toPtr-*stringPtr;
     
@@ -1866,7 +1899,7 @@ static void fillStyleString(const char **stringPtr, char **stylePtr,
     	
     for (i=0; i<len; i++)
     	*(*stylePtr)++ = style;
-    if (prevChar != NULL) *prevChar = *(toPtr-1);
+    if (prevChar != NULL) *prevChar = (unsigned char)*(toPtr-1);
     *stringPtr = toPtr;
 }
 
@@ -2083,20 +2116,28 @@ Pixel AllocColor(Widget w, const char *colorName, int *r, int *g, int *b)
 /*
 ** Get the character before position "pos" in buffer "buf"
 */
-static char getPrevChar(textBuffer *buf, int pos)
+static unsigned int getPrevChar(textBuffer *buf, int pos)
 {
-    return pos == 0 ? '\0' : BufGetCharacter(buf, pos-1);
+    unsigned long scalar;
+    char *text;
+    int previous;
+    if (!pos) return 0;
+    if (buf->encoding != BUF_ENCODING_UTF8) return (unsigned char)BufGetCharacter(buf,pos-1);
+    previous=BufPrevCharacter(buf,pos);
+    text=BufGetRange(buf,previous,pos);
+    Utf8Decode(text,pos-previous,&scalar,NULL);
+    NEditFree(text);return scalar;
 }
 
 /*
 ** compile a regular expression and present a user friendly dialog on failure.
 */
-static regexp *compileREAndWarn(Widget parent, const char *re)
+static regexp *compileREAndWarn(Widget parent, const char *re, int regexFlags)
 {
     regexp *compiledRE;
     char *compileMsg;
     
-    compiledRE = CompileRE(re, &compileMsg, REDFLT_STANDARD);
+    compiledRE = CompileRE(re, &compileMsg, regexFlags);
     if (compiledRE == NULL)
     {
         char *boundedRe = NEditStrdup(re);
@@ -2302,14 +2343,18 @@ static int findSafeParseRestartPos(textBuffer *buf,
 static int backwardOneContext(textBuffer *buf, reparseContext *context,
     	int fromPos)
 {
+    int chars=fromPos,n=context->nChars;
+    if(buf->encoding==BUF_ENCODING_UTF8)
+        while(n-->0 && chars>0) chars=BufPrevCharacter(buf,chars);
+    else chars=max(0,fromPos-n);
     if (context->nLines == 0)
-    	return max(0, fromPos - context->nChars);
+        return max(0, chars);
     else if (context->nChars == 0)
     	return max(0,
     	    	BufCountBackwardNLines(buf, fromPos, context->nLines-1) - 1);
     else
     	return max(0, min(max(0, BufCountBackwardNLines(buf, fromPos,
-    	    context->nLines-1) -1), fromPos - context->nChars));
+            context->nLines-1) -1), chars));
 }
 
 /*
@@ -2323,14 +2368,18 @@ static int backwardOneContext(textBuffer *buf, reparseContext *context,
 static int forwardOneContext(textBuffer *buf, reparseContext *context,
     	int fromPos)
 {
+    int chars=fromPos,n=context->nChars;
+    if(buf->encoding==BUF_ENCODING_UTF8)
+        while(n-->0 && chars<buf->length) chars=BufNextCharacter(buf,chars);
+    else chars=min(buf->length,fromPos+n);
     if (context->nLines == 0)
-    	return min(buf->length, fromPos + context->nChars);
+        return min(buf->length, chars);
     else if (context->nChars == 0)
     	return min(buf->length,
     	    	BufCountForwardNLines(buf, fromPos, context->nLines));
     else
     	return min(buf->length, max(BufCountForwardNLines(buf, fromPos,
-    	    	context->nLines), fromPos + context->nChars));
+                context->nLines), chars));
 }
 
 /*

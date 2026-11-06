@@ -13,4 +13,13 @@ int Utf8NextGraphemeZ(const char *text, int *columns);
 int Utf8IsIgnorable(unsigned long scalar);
 int Utf8CharWidth(unsigned long scalar);
 
+int Utf8FoldScalar(unsigned long scalar, char out[16]);
+char *Utf8CaseFold(const char *, int length);
+int Utf8Encode(unsigned long scalar, char out[4]);
+/* Simple Unicode case mapping, without normalization; caller frees result. */
+char *Utf8CaseMap(const char *, int length, int upper, int firstOnly, int change);
+int Utf8ScalarCount(const char *, int length);
+int Utf8ScalarOffset(const char *, int length, int index);
+int Utf8Previous(const char *, int length, int position);
+int Utf8IsDelimiter(unsigned long scalar, const char *delimiters);
 #endif

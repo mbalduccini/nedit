@@ -31,6 +31,7 @@
 #endif
 
 #include "tags.h"
+#include "selectionCodec.h"
 #include "textBuf.h"
 #include "text.h"
 #include "nedit.h"
@@ -921,8 +922,9 @@ static void findDefinitionHelper(WindowInfo *window, Time time, const char *arg,
     else
     {
         searchMode = search_type;
-        XtGetSelectionValue(window->textArea, XA_PRIMARY, XA_STRING,
-                findDefCB, window, time);
+        RequestTextSelection(window->textArea, XA_PRIMARY,
+                window->buffer->encoding == BUF_ENCODING_UTF8, time,
+                findDefCB, window);
     }
 }
 

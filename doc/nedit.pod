@@ -111,8 +111,10 @@ mode. UTF-8 mode uses Xft/Fontconfig and utf8proc on Linux; file bytes and undo
 positions are retained. Preferences > UTF-8 Document changes the current
 interpretation; Default Settings > UTF-8 by Default sets new-document policy.
 Cursor movement, deletion, selection and column edits preserve whole graphemes.
-Unicode search, clipboard protocols, shaping and bidirectional layout are
-separate follow-on features. Use a UTF-8 locale for typed text.
+Unicode literal search, scalar regex matching, syntax patterns, clipboard
+conversion, case commands and explicit Unicode macro APIs are supported.
+Regex uses simple case folding; literal search uses full folding. Shaping,
+bidirectional layout and printing remain follow-on work. Use a UTF-8 locale.
 
 =item B<-utf8font> I<fontconfig-name>
 

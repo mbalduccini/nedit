@@ -32,6 +32,8 @@
 #include <X11/Intrinsic.h>
 #include <X11/X.h>
 
+#define SEARCH_UTF8 0x10000 /* Internal interpretation flag; public offsets stay bytes. */
+
 enum SearchDirection {SEARCH_FORWARD, SEARCH_BACKWARD};
 
 void CreateFindDlog(Widget parent, WindowInfo *window);

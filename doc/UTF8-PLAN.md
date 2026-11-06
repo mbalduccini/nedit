@@ -265,35 +265,83 @@ legacy single-byte build. The following work is complete:
   Cursor redraw finds visible cells using binary search instead of traversing
   every offscreen cell.
 
-## Phase 2 progress: search dialog input
+## Phase 2 completion
 
-Find, Replace, and incremental-search fields now use a native Motif Xft
-rendition matching the active UTF-8 document's font when Motif supports Xft.
-Font changes and tab switches refresh those shared fields; returning to an
-8-bit document restores their original render table. A UTF-8 locale is required
-for Motif to decode text input correctly.
+Phase 2 is implemented for the Linux/Xft/utf8proc configuration.
 
-Copying from a UTF-8 document publishes `UTF8_STRING` as well as the existing
-`STRING` clipboard format. PRIMARY selections also advertise `UTF8_STRING`,
-and editor clipboard paste prefers it in UTF-8 mode. This fixes the dialog
-paste failure: Motif previously interpreted the raw UTF-8 bytes under `STRING`
-as Latin-1, displayed multiple characters, and searched for different bytes.
-Incremental selection-to-search now places its cursor using Motif character
-positions rather than byte counts.
+- PRIMARY, CLIPBOARD and secondary/Motif destination transfers negotiate
+  `UTF8_STRING`, `COMPOUND_TEXT` and Latin-1 `STRING`. `STRING` is now encoded
+  correctly: unrepresentable Unicode is refused rather than mislabeled or
+  replaced. Legacy document bytes are interpreted as Latin-1 at this protocol
+  boundary; file storage is unchanged. Raw malformed bytes and embedded NULs
+  remain recoverable through the editor's UTF8_STRING path. COMPOUND_TEXT is
+  offered only when Xlib converts the text completely. Primary move requests
+  deletion only after insertion and while the original owner still owns it.
+- Literal searches start and end at scalar boundaries. Case-insensitive literal
+  matching uses full Unicode case folding (for example `Straße` / `STRASSE`),
+  with matches mapped back to original byte offsets. A fold expansion cannot
+  be partially matched. Whole-word matching uses Unicode whitespace plus the
+  configured word delimiters; forward/backward wrapping is covered. No search
+  implicitly normalizes text: composed and decomposed accents remain distinct.
+- The existing regex parser and VM are instantiated with Unicode scalar cells,
+  preserving NEdit's dialect, switches, lookarounds, bounded/lazy quantifiers,
+  captures, backreferences and replacement syntax. `.`, classes, ranges and
+  repetition consume scalars; `\w` includes letters, marks, numbers and connector
+  punctuation, `\d` includes Unicode decimal digits, and `\s` uses Unicode
+  whitespace with the existing newline switches. Insensitive regex matching
+  uses simple one-scalar folding: sigma variants match, but `ß` does not match
+  the two regex characters `ss`. Regex numeric escapes retain their existing
+  0..255 values, interpreted as scalars in UTF-8 mode. Invalid bytes each form
+  a separate recoverable unit. Existing compiled-pattern and substitution size
+  limits still apply; Unicode substitution truncation preserves scalar edges.
+- Syntax patterns use the document's regex mode, including immediate/deferred
+  parsing, captures for coloring, incremental reparsing and encoding changes.
+  Style buffers stay byte-indexed. Character context distances count scalars
+  in UTF-8 mode. A scoped decoded-subject map avoids decoding the full document
+  again for each syntax match; maps are released before mutation.
+- Find, Replace and incremental search fields and calltips use a native Motif
+  Xft rendition matching the document font, restoring their original font in
+  legacy mode. Selection-to-search, selected filenames and tag-selection paths
+  negotiate text encodings. Motif still requires a UTF-8 locale.
+- Upper/lower-case commands apply Unicode simple mappings to selected text or
+  the preceding grapheme. Existing byte-based macro functions remain intact;
+  explicit Unicode APIs are listed below. Bulk replacement shares decoded and
+  folded subject maps. Shell filters continue exchanging original bytes, and
+  bundled smart-indent programs retain byte offsets and their ASCII rules.
 
-Automated application checks cover clipboard and PRIMARY paste with accented
-Latin, Greek, CJK, supplementary scalars and combining sequences; real Find
-button callbacks in literal and regex modes; replacement and incremental
-matching; Motif-to-editor clipboard paste; font restoration; and tab switching.
-A captured search-field image confirms readable Unicode rendering.
+### Explicit Unicode macro APIs
 
-This completes the search-dialog input fix, not all of Phase 2. Exact Unicode
-text works in literal searches and as literal text within regex patterns. The
-regex engine still operates on bytes for `.`, character classes, repetition and
-other constructs; Unicode case folding and word boundaries remain pending.
-Full legacy clipboard conversion, inbound PRIMARY negotiation and secondary
-selection interoperability also remain to be audited. The existing `STRING`
-format retains raw bytes for compatibility with legacy NEdit.
+| Function | Contract |
+| --- | --- |
+| `unicode_length(string)` | Count scalars; each malformed byte counts once |
+| `unicode_substring(string, start [, end])` | Scalar indices, end exclusive; negative indices count from the end |
+| `unicode_next(string, byteOffset)` / `unicode_previous(string, byteOffset)` | Return the next/previous scalar boundary as a byte offset |
+| `unicode_grapheme_length(string)` | Count extended grapheme clusters |
+| `unicode_next_grapheme(string, byteOffset)` / `unicode_previous_grapheme(string, byteOffset)` | Traverse extended grapheme boundaries and return byte offsets |
+| `unicode_toupper(string)` / `unicode_tolower(string)` | Simple Unicode mappings, preserving malformed bytes |
+| `unicode_casefold(string)` | Full Unicode folding, without normalization |
+
+Traversal clamps offsets to the string. Next at end and previous at zero stay
+there; an offset inside a scalar/grapheme moves to its enclosing end/start.
+These functions require utf8proc; legacy-only builds report that requirement.
+`search()` uses document interpretation automatically. `search_string()`,
+`replace_in_string()` and `split()` accept an optional `"utf8"` argument alongside
+their existing optional arguments; returned search/capture positions remain
+bytes. For example:
+
+```text
+unicode_length("é中")                         # 2
+unicode_substring("é中", 1)                   # "中"
+search_string("Straße", "STRASSE", 0, "utf8")  # 0
+replace_in_string("é中", "(.)", "<\\1>", "regex", "utf8")
+```
+
+`length()`, `substring()`, `replace_substring()`, document ranges and legacy
+case functions retain their original contracts. Custom macros and smart-indent
+programs that use these byte APIs can still split a sequence intentionally;
+use the explicit traversal APIs when doing character edits. Shell commands
+must themselves support UTF-8 if they transform text. The editor does not
+repair, normalize or transcode their output.
 
 ## Verification
 
@@ -303,7 +351,11 @@ rectangle boundaries, logical/pixel mappings, actual widget actions, undo/redo,
 styles, fallback, scrolling, wrapping, encoding changes, split views, synthetic
 Motif key lookup, long input commits, full application menus/font chooser,
 drag completion with undo/redo, and file operations.
-ASan/UBSan checks cover decoder/buffer/layout and column operations.
+ASan/UBSan checks cover decoder/buffer/layout, column operations and both regex
+engines. Phase 2 additionally checks foreign selection owners, encoding
+fallbacks, full-fold and regex search/replacement, scalar syntax contexts,
+calltip fonts, every explicit Unicode macro API and raw shell-filter output.
+The legacy-only build passes an isolated byte-editing/search/save smoke test.
 
 Representative workspace results: 1,000 cursor moves and hit tests on a 200 KB
 line take about 0.18 CPU seconds after caching; a 2.2 MB mixed UTF-8 file
@@ -313,27 +365,25 @@ still use NEdit's established whole-document wrap counting.
 
 ## Follow-on work and supported limits
 
-Phases 2 and 3 remain open:
+Phase 3 remains open:
 
-- Search dialog input and UTF-8 clipboard tagging are implemented as described
-  above. Full clipboard interoperability, Unicode search/regex/case conversion,
-  syntax patterns and macro string APIs remain pending. Macros and custom
-  smart-indent programs still receive byte offsets; they may deliberately create
-  malformed UTF-8. Decoder recovery preserves those bytes rather than rewriting
-  them. The bundled smart-indent path has been exercised with UTF-8 comments.
 - Grapheme-safe editing is implemented; shaping, bidirectional layout, Unicode
   line breaking and visual/logical navigation for complex scripts are not.
   Simple combining marks draw over their base; typographic mark attachment,
   Indic/Arabic shaping, emoji ligatures and bidirectional Hebrew need phase 3.
 - Motif owns preedit display. UTF-8 committed input and overflow handling are
-  covered, but external IME-specific preedit presentations require the broader
-  input-method work in phase 3. Printing, calltips and Motif dialogs other than
-  the search fields retain their old font paths.
+  covered; external IME-specific preedit presentations remain phase 3 work.
+  Printing/export and Motif dialogs beyond the search fields and calltips still
+  use their established font paths.
+- Unicode case conversion uses simple mappings, without locale-specific Turkish
+  casing or context-sensitive Greek final-sigma conversion. Literal search and
+  `unicode_casefold()` support full folding; regex uses simple folding.
 - Undo/redo preserves complete byte sequences. Undo grouping still classifies
-  single-character operations by byte count, so multibyte typing may create
-  smaller undo groups than ASCII typing. Unicode-aware grouping is follow-on
-  behavior, not an offset change.
+  single-character operations by byte count, so multibyte typing can create
+  smaller undo groups than ASCII typing. This remains follow-on behavior.
+- Custom byte-oriented macros, external filters and old clients publishing raw
+  UTF-8 under `STRING` can produce unexpected or malformed text. The protocol
+  now honors Latin-1 `STRING`; old mislabeled bytes are not guessed as UTF-8.
+  Original malformed document bytes remain recoverable.
 
-The remaining Phase 2 work covers clipboard interoperability, Unicode search,
-highlighting and macro APIs. No installed editor or running server is replaced
-by these changes.
+No installed editor or running server is replaced by these changes.

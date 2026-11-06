@@ -32,6 +32,8 @@
 #endif
 
 #include "macro.h"
+#include "utf8.h"
+#include "selectionCodec.h"
 #include "textBuf.h"
 #include "text.h"
 #include "nedit.h"
@@ -407,6 +409,17 @@ static int getStyleAtPosMS(WindowInfo *window, DataValue *argList, int nArgs,
 static int filenameDialogMS(WindowInfo* window, DataValue* argList, int nArgs,
         DataValue* result, char** errMsg);
 
+static int unicode_lengthMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_substringMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_nextMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_previousMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_toupperMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_tolowerMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_casefoldMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_grapheme_lengthMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_next_graphemeMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+static int unicode_previous_graphemeMS(WindowInfo *, DataValue *, int, DataValue *, char **);
+
 /* Built-in subroutines and variables for the macro language */
 static BuiltInSubr MacroSubrs[] = {lengthMS, getRangeMS, tPrintMS,
         dialogMS, stringDialogMS, replaceRangeMS, replaceSelectionMS,
@@ -424,7 +437,9 @@ static BuiltInSubr MacroSubrs[] = {lengthMS, getRangeMS, tPrintMS,
         rangesetSetColorMS, rangesetSetNameMS, rangesetSetModeMS,
         rangesetGetByNameMS,
         getPatternByNameMS, getPatternAtPosMS,
-        getStyleByNameMS, getStyleAtPosMS, filenameDialogMS
+        getStyleByNameMS, getStyleAtPosMS, filenameDialogMS,
+        unicode_lengthMS, unicode_substringMS, unicode_nextMS, unicode_previousMS, unicode_toupperMS, unicode_tolowerMS, unicode_casefoldMS,
+        unicode_grapheme_lengthMS, unicode_next_graphemeMS, unicode_previous_graphemeMS
     };
 #define N_MACRO_SUBRS (sizeof MacroSubrs/sizeof *MacroSubrs)
 static const char *MacroSubrNames[N_MACRO_SUBRS] = {"length", "get_range", "t_print",
@@ -443,7 +458,9 @@ static const char *MacroSubrNames[N_MACRO_SUBRS] = {"length", "get_range", "t_pr
         "rangeset_set_color", "rangeset_set_name", "rangeset_set_mode",
         "rangeset_get_by_name",
         "get_pattern_by_name", "get_pattern_at_pos",
-        "get_style_by_name", "get_style_at_pos", "filename_dialog"
+        "get_style_by_name", "get_style_at_pos", "filename_dialog",
+        "unicode_length", "unicode_substring", "unicode_next", "unicode_previous", "unicode_toupper", "unicode_tolower", "unicode_casefold",
+        "unicode_grapheme_length", "unicode_next_grapheme", "unicode_previous_grapheme"
     };
 static BuiltInSubr SpecialVars[] = {cursorMV, lineMV, columnMV,
         fileNameMV, filePathMV, lengthMV, selectionStartMV, selectionEndMV,
@@ -1817,6 +1834,166 @@ static int lengthMS(WindowInfo *window, DataValue *argList, int nArgs,
     return True;
 }
 
+/* Explicit Unicode APIs preserve byte-based APIs and document offsets. */
+typedef enum {
+    UNICODE_LENGTH,
+    UNICODE_SUBSTRING,
+    UNICODE_NEXT,
+    UNICODE_PREVIOUS,
+    UNICODE_UPPER,
+    UNICODE_LOWER,
+    UNICODE_CASEFOLD,
+    UNICODE_GRAPHEME_LENGTH,
+    UNICODE_NEXT_GRAPHEME,
+    UNICODE_PREVIOUS_GRAPHEME
+} UnicodeOperation;
+static int unicodeOperation(DataValue *args, int nargs, DataValue *result, char **error,
+                            UnicodeOperation operation)
+{
+    char *text, storage[TYPE_INT_STR_SIZE(int)], *mapped;
+    int length, count, from = 0, to, p, next, n;
+#ifndef HAVE_UTF8PROC
+    *error = "Unicode functions require a build with utf8proc";
+    return False;
+#endif
+    if (nargs != (operation == UNICODE_SUBSTRING || operation == UNICODE_NEXT ||
+                          operation == UNICODE_PREVIOUS ||
+                          operation >= UNICODE_NEXT_GRAPHEME
+                      ? 2
+                      : 1) &&
+        !(operation == UNICODE_SUBSTRING && nargs == 3))
+        return wrongNArgsErr(error);
+    if (!readStringArg(args[0], &text, storage, error))
+        return False;
+    length = strlen(text);
+    if (operation == UNICODE_LENGTH || operation == UNICODE_GRAPHEME_LENGTH) {
+        count = 0;
+        for (p = 0; p < length; count++)
+            p += operation == UNICODE_LENGTH
+                     ? Utf8Decode(text + p, length - p, NULL, NULL)
+                     : Utf8NextGrapheme(text + p, length - p, NULL);
+        result->tag = INT_TAG;
+        result->val.n = count;
+        return True;
+    }
+    if (operation == UNICODE_SUBSTRING) {
+        count = Utf8ScalarCount(text, length);
+        to = count;
+        if (!readIntArg(args[1], &from, error))
+            return False;
+        if (nargs == 3 && !readIntArg(args[2], &to, error))
+            return False;
+        if (from < 0)
+            from += count;
+        if (to < 0)
+            to += count;
+        if (from < 0)
+            from = 0;
+        if (to < from)
+            to = from;
+        from = Utf8ScalarOffset(text, length, from);
+        to = Utf8ScalarOffset(text, length, to);
+        result->tag = STRING_TAG;
+        AllocNStringNCpy(&result->val.str, text + from, to - from);
+        return True;
+    }
+    if (operation == UNICODE_NEXT || operation == UNICODE_PREVIOUS ||
+        operation >= UNICODE_NEXT_GRAPHEME) {
+        if (!readIntArg(args[1], &from, error))
+            return False;
+        if (from < 0)
+            from = 0;
+        if (from > length)
+            from = length;
+        if ((operation == UNICODE_PREVIOUS || operation == UNICODE_PREVIOUS_GRAPHEME) &&
+            from == 0) {
+            result->tag = INT_TAG;
+            result->val.n = 0;
+            return True;
+        }
+        p = 0;
+        next = 0;
+        while (p < length) {
+            n = operation >= UNICODE_NEXT_GRAPHEME
+                    ? Utf8NextGrapheme(text + p, length - p, NULL)
+                    : Utf8Decode(text + p, length - p, NULL, NULL);
+            next = p + n;
+            if (next > from || ((operation == UNICODE_PREVIOUS ||
+                                 operation == UNICODE_PREVIOUS_GRAPHEME) &&
+                                next == from))
+                break;
+            p = next;
+        }
+        result->tag = INT_TAG;
+        result->val.n =
+            operation == UNICODE_NEXT || operation == UNICODE_NEXT_GRAPHEME ? next : p;
+        return True;
+    }
+    mapped = operation == UNICODE_CASEFOLD
+                 ? Utf8CaseFold(text, length)
+                 : Utf8CaseMap(text, length, operation == UNICODE_UPPER, False, True);
+    result->tag = STRING_TAG;
+    AllocNStringCpy(&result->val.str, mapped);
+    NEditFree(mapped);
+    return True;
+}
+static int unicode_lengthMS(WindowInfo *w, DataValue *a, int n, DataValue *r, char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_LENGTH);
+}
+static int unicode_substringMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                               char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_SUBSTRING);
+}
+static int unicode_nextMS(WindowInfo *w, DataValue *a, int n, DataValue *r, char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_NEXT);
+}
+static int unicode_previousMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                              char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_PREVIOUS);
+}
+static int unicode_toupperMS(WindowInfo *w, DataValue *a, int n, DataValue *r, char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_UPPER);
+}
+static int unicode_tolowerMS(WindowInfo *w, DataValue *a, int n, DataValue *r, char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_LOWER);
+}
+static int unicode_casefoldMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                              char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_CASEFOLD);
+}
+static int unicode_grapheme_lengthMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                                     char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_GRAPHEME_LENGTH);
+}
+static int unicode_next_graphemeMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                                   char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_NEXT_GRAPHEME);
+}
+static int unicode_previous_graphemeMS(WindowInfo *w, DataValue *a, int n, DataValue *r,
+                                       char **e)
+{
+    (void)w;
+    return unicodeOperation(a, n, r, e, UNICODE_PREVIOUS_GRAPHEME);
+}
+
 /*
 ** Built-in macro subroutines for min and max
 */
@@ -2251,82 +2428,34 @@ static int tolowerMS(WindowInfo *window, DataValue *argList, int nArgs,
     return True;
 }
 
-static int stringToClipboardMS(WindowInfo *window, DataValue *argList, int nArgs,
-    	DataValue *result, char **errMsg)
+static int stringToClipboardMS(WindowInfo *window, DataValue *args, int nargs,
+                               DataValue *result, char **error)
 {
-    long itemID = 0;
-    XmString s;
-    int stat;
-    char stringStorage[TYPE_INT_STR_SIZE(int)], *string;
-    
-    /* Get the string argument */
-    if (nArgs != 1)
-    	return wrongNArgsErr(errMsg);
-    if (!readStringArg(argList[0], &string, stringStorage, errMsg))
-    	return False;
-    
-    /* Use the XmClipboard routines to copy the text to the clipboard.
-       If errors occur, just give up.  */
+    char *text, storage[TYPE_INT_STR_SIZE(int)];
+    if (nargs != 1)
+        return wrongNArgsErr(error);
+    if (!readStringArg(args[0], &text, storage, error))
+        return False;
+    PutClipboardText(window->textArea, XtLastTimestampProcessed(TheDisplay), text,
+                     strlen(text), window->buffer->encoding == BUF_ENCODING_UTF8);
     result->tag = NO_TAG;
-    stat = SpinClipboardStartCopy(TheDisplay, XtWindow(window->textArea),
-    	  s=XmStringCreateSimple("NEdit"), XtLastTimestampProcessed(TheDisplay),
-	  window->textArea, NULL, &itemID);
-    XmStringFree(s);
-    if (stat != ClipboardSuccess)
-    	return True;
-    if (SpinClipboardCopy(TheDisplay, XtWindow(window->textArea), itemID, "STRING",
-    	    string, strlen(string), 0, NULL) != ClipboardSuccess) {
-        SpinClipboardEndCopy(TheDisplay, XtWindow(window->textArea), itemID);      
-    	return True;
-    }
-    SpinClipboardEndCopy(TheDisplay, XtWindow(window->textArea), itemID);
     return True;
 }
-
-static int clipboardToStringMS(WindowInfo *window, DataValue *argList, int nArgs,
-    	DataValue *result, char **errMsg)
+static int clipboardToStringMS(WindowInfo *window, DataValue *args, int nargs,
+                               DataValue *result, char **error)
 {
-    unsigned long length, retLength;
-    long id = 0;
-
-    /* Should have no arguments */
-    if (nArgs != 0)
-    	return wrongNArgsErr(errMsg);
-    
-    /* Ask if there's a string in the clipboard, and get its length */
-    if (SpinClipboardInquireLength(TheDisplay, XtWindow(window->shell), "STRING",
-    	    &length) != ClipboardSuccess) {
-    	result->tag = STRING_TAG;
-    	result->val.str.rep = PERM_ALLOC_STR("");
-    	result->val.str.len = 0;
-        /*
-         * Possibly, the clipboard can remain in a locked state after
-         * a failure, so we try to remove the lock, just to be sure.
-         */
-        SpinClipboardUnlock(TheDisplay, XtWindow(window->shell));
-	return True;
-    }
-
-    /* Allocate a new string to hold the data */
+    unsigned long length;
+    char *text;
+    (void)args;
+    if (nargs != 0)
+        return wrongNArgsErr(error);
+    text = GetClipboardText(window->textArea,
+                            window->buffer->encoding == BUF_ENCODING_UTF8, &length);
     result->tag = STRING_TAG;
-    AllocNString(&result->val.str, (int)length + 1);
-
-    /* Copy the clipboard contents to the string */
-    if (SpinClipboardRetrieve(TheDisplay, XtWindow(window->shell), "STRING",
-    	    result->val.str.rep, length, &retLength, &id) != ClipboardSuccess) {
-    	retLength = 0;
-        /*
-         * Possibly, the clipboard can remain in a locked state after
-         * a failure, so we try to remove the lock, just to be sure.
-         */
-        SpinClipboardUnlock(TheDisplay, XtWindow(window->shell));
-    }
-    result->val.str.rep[retLength] = '\0';
-    result->val.str.len = retLength;
-
+    AllocNStringCpy(&result->val.str, text ? text : "");
+    NEditFree(text);
     return True;
 }
-
 
 /*
 ** Built-in macro subroutine for reading the contents of a text file into
@@ -2465,7 +2594,7 @@ static int writeOrAppendFile(int append, WindowInfo *window,
 static int searchMS(WindowInfo *window, DataValue *argList, int nArgs,
     	DataValue *result, char **errMsg)
 {
-    DataValue newArgList[9];
+    DataValue newArgList[10];
     
     /* Use the search string routine, by adding the buffer contents as
        the string argument */
@@ -2481,6 +2610,12 @@ static int searchMS(WindowInfo *window, DataValue *argList, int nArgs,
     /* copy other arguments to the new argument list */
     memcpy(&newArgList[1], argList, nArgs * sizeof(DataValue));
 
+    if (window->buffer->encoding == BUF_ENCODING_UTF8) {
+        newArgList[nArgs+1].tag = STRING_TAG;
+        newArgList[nArgs+1].val.str.rep = "utf8";
+        newArgList[nArgs+1].val.str.len = 4;
+        return searchStringMS(window, newArgList, nArgs+2, result, errMsg);
+    }
     return searchStringMS(window, newArgList, nArgs+1, result, errMsg);
 }
 
@@ -2512,8 +2647,8 @@ static int searchStringMS(WindowInfo *window, DataValue *argList, int nArgs,
     if (!readIntArg(argList[2], &beginPos, errMsg))
     	return False;
     if (!readSearchArgs(&argList[3], nArgs-3, &direction, &type, &wrap, errMsg))
-    	return False;
-    
+        return False;
+
     len = argList[0].val.str.len;
     if (beginPos > len) {
 	if (direction == SEARCH_FORWARD) {
@@ -2568,10 +2703,10 @@ static int replaceInStringMS(WindowInfo *window, DataValue *argList, int nArgs,
     char stringStorage[3][TYPE_INT_STR_SIZE(int)], *string, *searchStr, *replaceStr;
     char *argStr, *replacedStr;
     int searchType = SEARCH_LITERAL, copyStart, copyEnd;
-    int replacedLen, replaceEnd, force=False, i;
+    int replacedLen, replaceEnd, force=False, i, utf8=0;
     
     /* Validate arguments and convert to proper types */
-    if (nArgs < 3 || nArgs > 5)
+    if (nArgs < 3 || nArgs > 6)
     	return wrongNArgsErr(errMsg);
     if (!readStringArg(argList[0], &string, stringStorage[0], errMsg))
     	return False;
@@ -2580,6 +2715,7 @@ static int replaceInStringMS(WindowInfo *window, DataValue *argList, int nArgs,
     if (!readStringArg(argList[2], &replaceStr, stringStorage[2], errMsg))
     	return False;
     for (i = 3; i < nArgs; i++) {
+        if (argList[i].tag == STRING_TAG && !strcmp(argList[i].val.str.rep,"utf8")) {utf8=SEARCH_UTF8;continue;}
         /* Read the optional search type and force arguments */
 	if (!readStringArg(argList[i], &argStr, stringStorage[2], errMsg))
     	    return False;
@@ -2595,7 +2731,7 @@ static int replaceInStringMS(WindowInfo *window, DataValue *argList, int nArgs,
     }
     
     /* Do the replace */
-    replacedStr = ReplaceAllInString(string, searchStr, replaceStr, searchType,
+    replacedStr = ReplaceAllInString(string, searchStr, replaceStr, searchType | utf8,
 	    &copyStart, &copyEnd, &replacedLen, GetWindowDelimiters(window));
     
     /* Return the results */
@@ -2631,7 +2767,7 @@ static int replaceInStringMS(WindowInfo *window, DataValue *argList, int nArgs,
 static int readSearchArgs(DataValue *argList, int nArgs, int *searchDirection,
 	int *searchType, int *wrap, char **errMsg)
 {
-    int i;
+    int i, utf8=0;
     char *argStr, stringStorage[TYPE_INT_STR_SIZE(int)];
     
     *wrap = False;
@@ -2640,6 +2776,8 @@ static int readSearchArgs(DataValue *argList, int nArgs, int *searchDirection,
     for (i=0; i<nArgs; i++) {
     	if (!readStringArg(argList[i], &argStr, stringStorage, errMsg))
     	    return False;
+        else if (!strcmp(argStr, "utf8"))
+            utf8=SEARCH_UTF8;
     	else if (!strcmp(argStr, "wrap"))
     	    *wrap = True;
     	else if (!strcmp(argStr, "nowrap"))
@@ -2653,6 +2791,7 @@ static int readSearchArgs(DataValue *argList, int nArgs, int *searchDirection,
     	    	return False;
 	}
     }
+    *searchType |= utf8;
     return True;
 }
 
@@ -3890,9 +4029,9 @@ static int splitMS(WindowInfo *window, DataValue *argList, int nArgs,
     int found, elementEnd, indexNum;
     char indexStr[TYPE_INT_STR_SIZE(int)], *allocIndexStr;
     DataValue element;
-    int elementLen;
+    int elementLen, i, utf8=0;
     
-    if (nArgs < 2) {
+    if (nArgs < 2 || nArgs > 4) {
         return(wrongNArgsErr(errMsg));
     }
     if (!readStringArg(argList[0], &sourceStr, stringStorage[0], errMsg)) {
@@ -3911,16 +4050,16 @@ static int splitMS(WindowInfo *window, DataValue *argList, int nArgs,
         *errMsg = "second argument must be a non-empty string: %s";
         return(False);
     }
-    if (nArgs > 2 && readStringArg(argList[2], &typeSplitStr, stringStorage[2], errMsg)) {
-      	if (!StringToSearchType(typeSplitStr, &searchType)) {
-            *errMsg = "unrecognized argument to %s";
-            return(False);
+    searchType=SEARCH_LITERAL;
+    for(i=2;i<nArgs;i++) {
+        if(!readStringArg(argList[i],&typeSplitStr,stringStorage[2],errMsg)) return False;
+        if(!strcmp(typeSplitStr,"utf8")) utf8=SEARCH_UTF8;
+        else if(!StringToSearchType(typeSplitStr,&searchType)) {
+            *errMsg="unrecognized argument to %s";return False;
         }
     }
-    else {
-    	searchType = SEARCH_LITERAL;
-    }
-    
+    searchType |= utf8;
+
     result->tag = ARRAY_TAG;
     result->val.arrayPtr = ArrayNew();
 
@@ -3954,7 +4093,8 @@ static int splitMS(WindowInfo *window, DataValue *argList, int nArgs,
 
         if (found) {
             if (foundStart == foundEnd) {
-                beginPos = foundEnd + 1; /* Avoid endless loop for 0-width match */
+                beginPos = foundEnd + (utf8 && foundEnd<strLength ?
+                    Utf8Decode(sourceStr+foundEnd,strLength-foundEnd,NULL,NULL) : 1); /* Avoid endless loop for 0-width match */
             } else {
                 beginPos = foundEnd;
             }

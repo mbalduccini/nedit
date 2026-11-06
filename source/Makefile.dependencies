@@ -42,7 +42,7 @@ preferences.o: preferences.c preferences.h nedit.h textBuf.h text.h \
   ../util/utils.h ../util/clearcase.h
 rangeset.o: rangeset.c textBuf.h textDisp.h rangeset.h
 regexConvert.o: regexConvert.c regexConvert.h
-regularExp.o: regularExp.c regularExp.h
+regularExp.o: regularExp.c regularExp.h unicodeRegex.h
 search.o: search.c search.h nedit.h textBuf.h regularExp.h text.h textP.h textDisp.h \
   server.h window.h preferences.h file.h highlight.h ../util/DialogF.h \
   ../util/misc.h
@@ -93,3 +93,11 @@ textDisp.o: utf8Font.h utf8Layout.h
 
 text.o shift.o: utf8.h
 preferences.o: textP.h textDisp.h utf8Font.h
+
+selectionCodec.o: selectionCodec.c selectionCodec.h utf8.h
+
+textSel.o selection.o search.o macro.o tags.o: selectionCodec.h
+search.o macro.o shift.o highlight.o: utf8.h
+
+unicodeRegex.o: unicodeRegex.c unicodeRegex.h regularExp.c regularExp.h utf8.h ../util/nedit_malloc.h
+regularExp.o highlight.o: unicodeRegex.h

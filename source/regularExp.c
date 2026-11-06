@@ -82,7 +82,15 @@
 #endif
 
 #include "regularExp.h"
+#ifndef NEDIT_WIDE_REGEX
+#include "unicodeRegex.h"
+#endif
 #include "../util/nedit_malloc.h"
+#ifndef NEDIT_WIDE_REGEX
+typedef unsigned char REChar;
+typedef char REInputChar;
+typedef unsigned int REContextChar;
+#endif
 
 #include <ctype.h>
 #include <limits.h>
@@ -94,6 +102,14 @@
 #include "../debug.h"
 #endif
 
+
+#ifndef NEDIT_WIDE_REGEX
+#define reLength(s) strlen((const char *)(s))
+#define reFind(s,c) ((REChar *)strchr((const char *)(s), (int)(c)))
+#define reClassFind(s,c) reFind(s,c)
+#define reCompare(a,b,n) strncmp((const char *)(a),(const char *)(b),(n))
+#define reDelimiter(c) Current_Delimiters[(unsigned char)(c)]
+#endif
 
 /* The first byte of the regexp internal `program' is a magic number to help
    gaurd against corrupted data; the compiled regex code really begins in the
@@ -213,7 +229,7 @@
 #define LAST_PAREN  (CLOSE + NSUBEXP)
 
 #if (LAST_PAREN > UCHAR_MAX)
-#error "Too many parentheses for storage in an unsigned char (LAST_PAREN too big.)"
+#error "Too many parentheses for storage in an REChar (LAST_PAREN too big.)"
 #endif
 
 /* The next_ptr () function can consume up to 30% of the time during matching
@@ -395,11 +411,11 @@
 #define LENGTH_SIZE	4
 #define NODE_SIZE       (NEXT_PTR_SIZE + OP_CODE_SIZE)
 
-#define GET_OP_CODE(p)  (*(unsigned char *)(p))
+#define GET_OP_CODE(p)  (*(REChar *)(p))
 #define OPERAND(p)      ((p) + NODE_SIZE)
 #define GET_OFFSET(p)   ((( *((p) + 1) & 0377) << 8) + (( *((p) + 2)) & 0377))
-#define PUT_OFFSET_L(v) (unsigned char)(((v) >> 8) & 0377)
-#define PUT_OFFSET_R(v) (unsigned char) ((v)       & 0377)
+#define PUT_OFFSET_L(v) (REChar)(((v) >> 8) & 0377)
+#define PUT_OFFSET_R(v) (REChar) ((v)       & 0377)
 #define GET_LOWER(p)    ((( *((p) + NODE_SIZE) & 0377) << 8) + \
                          (( *((p) + NODE_SIZE+1)) & 0377))
 #define GET_UPPER(p)    ((( *((p) + NODE_SIZE+2) & 0377) << 8) + \
@@ -410,9 +426,9 @@
 #define REG_FAIL(m)      {*Error_Ptr = (m); return (NULL);}
 #define IS_QUANTIFIER(c) ((c) == '*' || (c) == '+' || \
                           (c) == '?' || (c) == Brace_Char)
-#define SET_BIT(i,n)     ((i) |= (1 << ((n) - 1)))
-#define TEST_BIT(i,n)    ((i) &  (1 << ((n) - 1)))
-#define U_CHAR_AT(p)     ((unsigned int) *(unsigned char *)(p))
+#define SET_BIT(i,n)     ((i) |= (1U << ((n) - 1)))
+#define TEST_BIT(i,n)    ((i) &  (1U << ((n) - 1)))
+#define U_CHAR_AT(p)     ((unsigned int) *(REChar *)(p))
 
 /* Flags to be passed up and down via function parameters during compile. */
 
@@ -457,16 +473,16 @@
 
 /* Global work variables for `CompileRE'. */
 
-static unsigned char *Reg_Parse;       /* Input scan ptr (scans user's regex) */
+static REChar *Reg_Parse;       /* Input scan ptr (scans user's regex) */
 static int            Total_Paren;     /* Parentheses, (),  counter. */
 static int            Num_Braces;      /* Number of general {m,n} constructs.
                                           {m,n} quantifiers of SIMPLE atoms are
                                           not included in this count. */
-static int            Closed_Parens;   /* Bit flags indicating () closure. */
-static int            Paren_Has_Width; /* Bit flags indicating ()'s that are
+static unsigned int   Closed_Parens;   /* Bit flags indicating () closure. */
+static unsigned int   Paren_Has_Width; /* Bit flags indicating ()'s that are
                                           known to not match the empty string */
-static unsigned char  Compute_Size;    /* Address of this used as flag. */
-static unsigned char *Code_Emit_Ptr;   /* When Code_Emit_Ptr is set to
+static REChar  Compute_Size;    /* Address of this used as flag. */
+static REChar *Code_Emit_Ptr;   /* When Code_Emit_Ptr is set to
                                           &Compute_Size no code is emitted.
                                           Instead, the size of code that WOULD
                                           have been generated is accumulated in
@@ -478,51 +494,51 @@ static char         **Error_Ptr;       /* Place to store error messages so
                                           they can be returned by `CompileRE' */
 static char           Error_Text [128];/* Sting to build error messages in. */
 
-static unsigned char  White_Space [WHITE_SPACE_SIZE]; /* Arrays used by       */
-static unsigned char  Word_Char   [ALNUM_CHAR_SIZE];  /* functions            */
-static unsigned char  Letter_Char [ALNUM_CHAR_SIZE];  /* init_ansi_classes () */
+static REChar  White_Space [WHITE_SPACE_SIZE]; /* Arrays used by       */
+static REChar  Word_Char   [ALNUM_CHAR_SIZE];  /* functions            */
+static REChar  Letter_Char [ALNUM_CHAR_SIZE];  /* init_ansi_classes () */
                                                       /* and
                                                          shortcut_escape ().  */
 
-static unsigned char  ASCII_Digits [] = "0123456789"; /* Same for all */
+static REChar ASCII_Digits[] = {'0','1','2','3','4','5','6','7','8','9',0}; /* Same for all */
                                                       /* locales.     */
 static int            Is_Case_Insensitive;
 static int            Match_Newline;
 
 static int            Enable_Counting_Quantifier = 1;
-static unsigned char  Brace_Char;
-static unsigned char  Default_Meta_Char [] = "{.*+?[(|)^<>$";
-static unsigned char *Meta_Char;
+static REChar  Brace_Char;
+static REChar Default_Meta_Char[] = {'{','.','*','+','?','[','(','|',')','^','<','>','$',0};
+static REChar *Meta_Char;
 
 typedef struct { long lower; long upper; } len_range;
 
 /* Forward declarations for functions used by `CompileRE'. */
 
-static unsigned char * alternative     (int *flag_param, len_range *range_param);
-static unsigned char * back_ref        (unsigned char *c, int *flag_param,
+static REChar * alternative     (int *flag_param, len_range *range_param);
+static REChar * back_ref        (REChar *c, int *flag_param,
                                         int emit);
-static unsigned char * chunk           (int paren, int *flag_param, len_range *range_param);
-static void            emit_byte       (unsigned char c);
-static void            emit_class_byte (unsigned char c);
-static unsigned char * emit_node       (int op_code);
-static unsigned char * emit_special    (unsigned char op_code,
+static REChar * chunk           (int paren, int *flag_param, len_range *range_param);
+static void            emit_byte       (REChar c);
+static void            emit_class_byte (REChar c);
+static REChar * emit_node       (int op_code);
+static REChar * emit_special    (REChar op_code,
                                         unsigned long test_val,
                                         int index);
-static unsigned char   literal_escape  (unsigned char c);
-static unsigned char   numeric_escape  (unsigned char c, unsigned char **parse);
-static unsigned char * atom            (int *flag_param, len_range *range_param);
+static REChar   literal_escape  (REChar c);
+static REChar   numeric_escape  (REChar c, REChar **parse);
+static REChar * atom            (int *flag_param, len_range *range_param);
 static void            reg_error       (char *str);
-static unsigned char * insert          (unsigned char op, unsigned char *opnd,
+static REChar * insert          (REChar op, REChar *opnd,
                                         long min, long max, int index);
-static unsigned char * next_ptr        (unsigned char *ptr);
-static void            offset_tail     (unsigned char *ptr, int offset,
-                                        unsigned char *val);
-static void            branch_tail     (unsigned char *ptr, int offset,
-                                        unsigned char *val);
-static unsigned char * piece           (int *flag_param, len_range *range_param);
-static void            tail            (unsigned char *search_from,
-                                        unsigned char *point_t);
-static unsigned char * shortcut_escape (unsigned char c, int *flag_param,
+static REChar * next_ptr        (REChar *ptr);
+static void            offset_tail     (REChar *ptr, int offset,
+                                        REChar *val);
+static void            branch_tail     (REChar *ptr, int offset,
+                                        REChar *val);
+static REChar * piece           (int *flag_param, len_range *range_param);
+static void            tail            (REChar *search_from,
+                                        REChar *point_t);
+static REChar * shortcut_escape (REChar c, int *flag_param,
                                         int emit);
 
 static int             init_ansi_classes  (void);
@@ -542,13 +558,21 @@ static int             init_ansi_classes  (void);
  * some of the structure of the compiled regexp.
  *----------------------------------------------------------------------*/
 
-regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
+regexp * CompileRE (const REInputChar *exp, char **errorText, int defaultFlags) {
 
    register                regexp *comp_regex = NULL;
-   register unsigned char *scan;
+   register REChar *scan;
                      int   flags_local, pass;
 	 	     len_range range_local;
 
+#if defined(HAVE_UTF8PROC) && !defined(NEDIT_WIDE_REGEX)
+   if (defaultFlags & REDFLT_UTF8)
+       return CompileUtf8RE((const char *)exp, errorText, defaultFlags);
+#elif !defined(NEDIT_WIDE_REGEX)
+   if (defaultFlags & REDFLT_UTF8) {
+       *errorText="UTF-8 regex unavailable in this build";return NULL;
+   }
+#endif
    if (Enable_Counting_Quantifier) {
       Brace_Char  = '{';
       Meta_Char   = &Default_Meta_Char [0];
@@ -596,7 +620,7 @@ regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
       Match_Newline = 0;  /* ((defaultFlags & REDFLT_MATCH_NEWLINE)   ? 1 : 0); 
                              Currently not used. Uncomment if needed. */
 
-      Reg_Parse       = (unsigned char *) exp;
+      Reg_Parse       = (REChar *) exp;
       Total_Paren     = 1;
       Num_Braces      = 0;
       Closed_Parens   = 0;
@@ -606,8 +630,10 @@ regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
       emit_byte ('%');  /* Placeholder for num of capturing parentheses.    */
       emit_byte ('%');  /* Placeholder for num of general {m,n} constructs. */
 
-      if (chunk (NO_PAREN, &flags_local, &range_local) == NULL) 
-	  return (NULL); /* Something went wrong */
+      if (chunk (NO_PAREN, &flags_local, &range_local) == NULL) {
+          NEditFree(comp_regex);
+          return NULL;
+      } /* Something went wrong */
       if (pass == 1) {
          if (Reg_Size >= MAX_COMPILED_SIZE) {
             /* Too big for NEXT pointers NEXT_PTR_SIZE bytes long to span.
@@ -620,16 +646,19 @@ regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
 
          /* Allocate memory. */
 
-         comp_regex = (regexp *) NEditMalloc (sizeof (regexp) + Reg_Size);
+         comp_regex = (regexp *) NEditMalloc (sizeof (regexp) + Reg_Size * sizeof(REChar));
 
          if (comp_regex == NULL) REG_FAIL ("out of memory in `CompileRE\'");
 
-         Code_Emit_Ptr = (unsigned char *) comp_regex->program;
+         Code_Emit_Ptr = (REChar *) comp_regex->program;
       }
    }
 
-   comp_regex->program [1] = (unsigned char) Total_Paren - 1;
-   comp_regex->program [2] = (unsigned char) Num_Braces;
+#ifndef NEDIT_WIDE_REGEX
+   comp_regex->utf8 = 0;
+#endif
+   comp_regex->program [1] = (REChar) Total_Paren - 1;
+   comp_regex->program [2] = (REChar) Num_Braces;
 
    /*----------------------------------------*
     * Dig out information for optimizations. *
@@ -640,7 +669,7 @@ regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
 
    /* First BRANCH. */
 
-   scan = (unsigned char *) (comp_regex->program + REGEX_START_OFFSET);
+   scan = (REChar *) (comp_regex->program + REGEX_START_OFFSET);
 
    if (GET_OP_CODE (next_ptr (scan)) == END) { /* Only one top-level choice. */
       scan = OPERAND (scan);
@@ -679,19 +708,19 @@ regexp * CompileRE (const char *exp, char **errorText, int defaultFlags) {
  * branches to what follows makes it hard to avoid.                     *
  *----------------------------------------------------------------------*/
 
-static unsigned char * chunk (int paren, int *flag_param, 
+static REChar * chunk (int paren, int *flag_param,
                               len_range *range_param) {
 
-   register unsigned char *ret_val = NULL;
-   register unsigned char *this_branch;
-   register unsigned char *ender = NULL;
+   register REChar *ret_val = NULL;
+   register REChar *this_branch;
+   register REChar *ender = NULL;
    register          int   this_paren = 0;
                      int   flags_local, first = 1, zero_width, i;
                      int   old_sensitive = Is_Case_Insensitive;
                      int   old_newline   = Match_Newline;
 		     len_range range_local;
 		     int   look_only = 0;
-            unsigned char *emit_look_behind_bounds = NULL;
+            REChar *emit_look_behind_bounds = NULL;
 	             
 
    *flag_param = HAS_WIDTH;  /* Tentatively. */
@@ -880,11 +909,11 @@ static unsigned char * chunk (int paren, int *flag_param,
  * pointers of each regex atom together sequentialy.
  *----------------------------------------------------------------------*/
 
-static unsigned char * alternative (int *flag_param, len_range *range_param) {
+static REChar * alternative (int *flag_param, len_range *range_param) {
 
-   register unsigned char *ret_val;
-   register unsigned char *chain;
-   register unsigned char *latest;
+   register REChar *ret_val;
+   register REChar *chain;
+   register REChar *latest;
                      int   flags_local;
 		     len_range range_local;
 
@@ -937,11 +966,11 @@ static unsigned char * alternative (int *flag_param, len_range *range_param) {
  * dispensed with entirely, but the endmarker role is not redundant.
  *----------------------------------------------------------------------*/
 
-static unsigned char * piece (int *flag_param, len_range *range_param) {
+static REChar * piece (int *flag_param, len_range *range_param) {
 
-   register unsigned char *ret_val;
-   register unsigned char *next;
-   register unsigned char  op_code;
+   register REChar *ret_val;
+   register REChar *next;
+   register REChar  op_code;
             unsigned long  min_max [2] = {REG_ZERO, REG_INFINITY};
             int            flags_local, i, brace_present = 0;
             int            lazy = 0, comma_present = 0;
@@ -981,7 +1010,7 @@ static unsigned char * piece (int *flag_param, len_range *range_param) {
             value for max and min of 65,535 is due to using 2 bytes to store
             each value in the compiled regex code. */
 
-         while (isdigit (*Reg_Parse)) {
+         while (*Reg_Parse >= '0' && *Reg_Parse <= '9') {
             /* (6553 * 10 + 6) > 65535 (16 bit max) */
 
             if ((min_max [i] == 6553UL && (*Reg_Parse - '0') <= 5) ||
@@ -1482,10 +1511,10 @@ static unsigned char * piece (int *flag_param, len_range *range_param) {
  * is smaller to store and faster to run.
  *----------------------------------------------------------------------*/
 
-static unsigned char * atom (int *flag_param, len_range *range_param) {
+static REChar * atom (int *flag_param, len_range *range_param) {
 
-   register unsigned char *ret_val;
-            unsigned char  test;
+   register REChar *ret_val;
+            REChar  test;
             int            flags_local;
 	    len_range      range_local;
 
@@ -1643,7 +1672,7 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
          {
             register unsigned int  second_value;
             register unsigned int  last_value;
-                     unsigned char last_emit = 0;
+                     REChar last_emit = 0;
 
             /* Handle characters that can only occur at the start of a class. */
 
@@ -1727,6 +1756,7 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
                         last_value = U_CHAR_AT (Reg_Parse);
                      }
 
+#ifndef NEDIT_WIDE_REGEX
                      if (Is_Case_Insensitive) {
                         second_value =
                            (unsigned int) tolower ((int) second_value);
@@ -1734,6 +1764,7 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
                            (unsigned int) tolower ((int) last_value);
                      }
 
+#endif
                      /* For case insensitive, something like [A-_] will
                         generate an error here since ranges are converted to
                         lower case. */
@@ -1746,11 +1777,17 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
                         loop is not run since the first character of any range
                         was emitted by the previous iteration of while loop. */
 
+#ifdef NEDIT_WIDE_REGEX
+                     emit_byte(Is_Case_Insensitive ? UCLASS_RANGE_IC : UCLASS_RANGE);
+                     emit_byte(second_value-1);
+                     emit_byte(last_value);
+#else
                      for (; second_value <= last_value; second_value++) {
                         emit_class_byte (second_value);
                      }
+#endif
 
-                     last_emit = (unsigned char) last_value;
+                     last_emit = (REChar) last_value;
 
                      Reg_Parse++;
 
@@ -1860,7 +1897,7 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
          Reg_Parse--; /* If we fell through from the above code, we are now
                          pointing at the back slash (\) character. */
          {
-            unsigned char *parse_save;
+            REChar *parse_save;
                      int   len = 0;
 
             if (Is_Case_Insensitive) {
@@ -1873,7 +1910,7 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
                reference, or end of regex string. */
 
             for (; *Reg_Parse != '\0' &&
-                   !strchr ((char *) Meta_Char, (int) *Reg_Parse);
+                   !reFind (Meta_Char, (int) *Reg_Parse);
                  len++) {
 
                /* Save where we are in case we have to back
@@ -1974,10 +2011,10 @@ static unsigned char * atom (int *flag_param, len_range *range_param) {
  * Returns a pointer to the START of the emitted node.
  *----------------------------------------------------------------------*/
 
-static unsigned char * emit_node (int op_code) {
+static REChar * emit_node (int op_code) {
 
-   register unsigned char *ret_val;
-   register unsigned char *ptr;
+   register REChar *ret_val;
+   register REChar *ptr;
 
    ret_val = Code_Emit_Ptr; /* Return address of start of node */
 
@@ -1985,7 +2022,7 @@ static unsigned char * emit_node (int op_code) {
       Reg_Size += NODE_SIZE;
    } else {
        ptr   = ret_val;
-      *ptr++ = (unsigned char) op_code;
+      *ptr++ = (REChar) op_code;
       *ptr++ = '\0'; /* Null "NEXT" pointer. */
       *ptr++ = '\0';
 
@@ -2001,7 +2038,7 @@ static unsigned char * emit_node (int op_code) {
  * Emit (if appropriate) a byte of code (usually part of an operand.)
  *----------------------------------------------------------------------*/
 
-static void emit_byte (unsigned char c) {
+static void emit_byte (REChar c) {
 
    if (Code_Emit_Ptr == &Compute_Size) {
       Reg_Size++;
@@ -2017,8 +2054,12 @@ static void emit_byte (unsigned char c) {
  * class operand.)
  *----------------------------------------------------------------------*/
 
-static void emit_class_byte (unsigned char c) {
+static void emit_class_byte (REChar c) {
 
+#ifdef NEDIT_WIDE_REGEX
+   if (Is_Case_Insensitive) { emit_byte(UCLASS_FOLD); emit_byte(c); }
+   else emit_byte(c);
+#else
    if (Code_Emit_Ptr == &Compute_Size) {
       Reg_Size++;
 
@@ -2032,6 +2073,7 @@ static void emit_class_byte (unsigned char c) {
    } else {
       *Code_Emit_Ptr++ = c;
    }
+#endif
 }
 
 /*----------------------------------------------------------------------*
@@ -2040,13 +2082,13 @@ static void emit_class_byte (unsigned char c) {
  * Emit nodes that need special processing.
  *----------------------------------------------------------------------*/
 
-static unsigned char * emit_special (
-   unsigned char op_code,
+static REChar * emit_special (
+   REChar op_code,
    unsigned long test_val,
             int  index) {
 
-   register unsigned char *ret_val = &Compute_Size;
-   register unsigned char *ptr;
+   register REChar *ret_val = &Compute_Size;
+   register REChar *ptr;
 
    if (Code_Emit_Ptr == &Compute_Size) {
       switch (op_code) {
@@ -2070,7 +2112,7 @@ static unsigned char * emit_special (
       ptr     = Code_Emit_Ptr;
 
       if (op_code == INC_COUNT || op_code == TEST_COUNT) {
-         *ptr++ = (unsigned char) index;
+         *ptr++ = (REChar) index;
 
          if (op_code == TEST_COUNT) {
             *ptr++ = PUT_OFFSET_L (test_val);
@@ -2098,16 +2140,16 @@ static unsigned char * emit_special (
  * where the new node is to be inserted.
  *----------------------------------------------------------------------*/
 
-static unsigned char * insert (
-   unsigned char  op,
-   unsigned char *insert_pos,
+static REChar * insert (
+   REChar  op,
+   REChar *insert_pos,
    long           min,
    long           max,
    int            index) {
 
-   register unsigned char *src;
-   register unsigned char *dst;
-            unsigned char *place;
+   register REChar *src;
+   register REChar *dst;
+            REChar *place;
                      int   insert_size = NODE_SIZE;
 
    if (op == BRACE || op == LAZY_BRACE) {
@@ -2145,7 +2187,7 @@ static unsigned char * insert (
       *place++ = PUT_OFFSET_L (max);
       *place++ = PUT_OFFSET_R (max);
    } else if (op == INIT_COUNT) {
-      *place++ = (unsigned char) index;
+      *place++ = (REChar) index;
    }
 
    return place; /* Return a pointer to the start of the code moved. */
@@ -2155,10 +2197,10 @@ static unsigned char * insert (
  * tail - Set the next-pointer at the end of a node chain.
  *----------------------------------------------------------------------*/
 
-static void tail (unsigned char *search_from, unsigned char *point_to) {
+static void tail (REChar *search_from, REChar *point_to) {
 
-   register unsigned char *scan;
-   register unsigned char *next;
+   register REChar *scan;
+   register REChar *next;
    register          int   offset;
 
    if (search_from == &Compute_Size) return;
@@ -2193,7 +2235,7 @@ static void tail (unsigned char *search_from, unsigned char *point_to) {
  * Perform a tail operation on (ptr + offset).
  *--------------------------------------------------------------------*/
 
-static void offset_tail (unsigned char *ptr, int offset, unsigned char *val) {
+static void offset_tail (REChar *ptr, int offset, REChar *val) {
 
    if (ptr == &Compute_Size || ptr == NULL) return;
 
@@ -2207,7 +2249,7 @@ static void offset_tail (unsigned char *ptr, int offset, unsigned char *val) {
  * BRANCH node.
  *--------------------------------------------------------------------*/
 
-static void branch_tail (unsigned char *ptr, int offset, unsigned char *val) {
+static void branch_tail (REChar *ptr, int offset, REChar *val) {
 
    if (ptr == &Compute_Size || ptr == NULL ||GET_OP_CODE (ptr) != BRANCH) {
       return;
@@ -2255,15 +2297,16 @@ static void branch_tail (unsigned char *ptr, int offset, unsigned char *val) {
  *
  *--------------------------------------------------------------------*/
 
-static unsigned char * shortcut_escape (
-   unsigned char  c,
+static REChar * shortcut_escape (
+   REChar  c,
    int           *flag_param,
    int            emit) {
 
-   register unsigned char *class   = NULL;
-   static   unsigned char *codes   = (unsigned char *) "ByYdDlLsSwW";
-            unsigned char *ret_val = (unsigned char *) 1; /* Assume success. */
-            unsigned char *valid_codes;
+   register REChar *class   = NULL;
+   static REChar codeChars[] = {'B','y','Y','d','D','l','L','s','S','w','W',0};
+   REChar *codes = codeChars;
+            REChar *ret_val = (REChar *) 1; /* Assume success. */
+            REChar *valid_codes;
 
    if (emit == EMIT_CLASS_BYTES || emit == CHECK_CLASS_ESCAPE) {
       valid_codes = codes + 3; /* \B, \y and \Y are not allowed in classes */
@@ -2271,12 +2314,21 @@ static unsigned char * shortcut_escape (
       valid_codes = codes;
    }
 
-   if (!strchr ((char *) valid_codes, (int) c)) {
+   if (!reFind (valid_codes, (int) c)) {
       return NULL; /* Not a valid shortcut escape sequence */
    } else if (emit == CHECK_ESCAPE || emit == CHECK_CLASS_ESCAPE) {
       return ret_val; /* Just checking if this is a valid shortcut escape. */
    }
 
+#ifdef NEDIT_WIDE_REGEX
+   if (emit == EMIT_CLASS_BYTES) {
+       int kind = c == 'd' || c == 'D' ? 0 : c == 'l' || c == 'L' ? 1 :
+           c == 'w' || c == 'W' ? 2 : Match_Newline ? 4 : 3;
+       emit_byte(UCLASS_BASE + kind * 2 + (c >= 'A' && c <= 'Z'));
+       if (Match_Newline && c == 's') emit_byte('\n');
+       return ret_val;
+   }
+#endif
    switch (c) {
       case 'd':
       case 'D':
@@ -2399,20 +2451,20 @@ static unsigned char * shortcut_escape (
  * \0000 is specified.
  *--------------------------------------------------------------------*/
 
-static unsigned char numeric_escape (
-   unsigned char    c,
-   unsigned char  **parse) {
+static REChar numeric_escape (
+   REChar    c,
+   REChar  **parse) {
 
-   static unsigned char digits [] = "fedcbaFEDCBA9876543210";
+   static REChar digits[] = {'f','e','d','c','b','a','F','E','D','C','B','A','9','8','7','6','5','4','3','2','1','0',0};
 
    static unsigned int digit_val [] = {
       15, 14, 13, 12, 11, 10,                  /* Lower case Hex digits */
       15, 14, 13, 12, 11, 10,                  /* Upper case Hex digits */
        9,  8,  7,  6,  5,  4,  3,  2,  1,  0}; /* Decimal Digits */
 
-   register unsigned char *scan;
-   register unsigned char *pos_ptr;
-   register unsigned char *digit_str;
+   register REChar *scan;
+   register REChar *pos_ptr;
+   register REChar *digit_str;
             unsigned int   value     =  0;
             unsigned int   radix     =  8;
                      int   width     =  3; /* Can not be bigger than \0377 */
@@ -2440,9 +2492,9 @@ static unsigned char numeric_escape (
 
    scan = *parse; scan++; /* Only change *parse on success. */
 
-   pos_ptr = (unsigned char *) strchr ((char *) digit_str, (int) *scan);
+   pos_ptr = (REChar *) reFind (digit_str, (int) *scan);
 
-   for (i = 0; pos_ptr != NULL && (i < width); i++) {
+   for (i = 0; *scan && pos_ptr != NULL && (i < width); i++) {
       pos   = (pos_ptr - digit_str) + pos_delta;
       value = (value * radix) + digit_val [pos];
 
@@ -2464,7 +2516,7 @@ static unsigned char numeric_escape (
       }
 
       scan++;
-      pos_ptr = (unsigned char *) strchr ((char *) digit_str, (int) *scan);
+      pos_ptr = (REChar *) reFind (digit_str, (int) *scan);
    }
 
    /* Handle the case of "\0" i.e. trying to specify a NULL character. */
@@ -2482,7 +2534,7 @@ static unsigned char numeric_escape (
       *parse = scan;
    }
 
-   return (unsigned char) value;
+   return (REChar) value;
 }
 
 /*--------------------------------------------------------------------*
@@ -2495,9 +2547,9 @@ static unsigned char numeric_escape (
  * escape.
  *--------------------------------------------------------------------*/
 
-static unsigned char literal_escape (unsigned char c) {
+static REChar literal_escape (REChar c) {
 
-   static unsigned char valid_escape [] =  {
+   static REChar valid_escape [] =  {
       'a',   'b',
       'e',
       'f',   'n',   'r',   't',   'v',   '(',    ')',   '-',   '[',   ']',
@@ -2505,7 +2557,7 @@ static unsigned char literal_escape (unsigned char c) {
       '+',   '?',   '&',   '\0'
    };
 
-   static unsigned char value [] = {
+   static REChar value [] = {
       '\a',  '\b',
 #ifdef EBCDIC_CHARSET
       0x27,  /* Escape character in IBM's EBCDIC character set. */
@@ -2540,25 +2592,25 @@ static unsigned char literal_escape (unsigned char c) {
  * text previously matched by another regex. *** IMPLEMENT LATER ***
  *--------------------------------------------------------------------*/
 
-static unsigned char * back_ref (
-   unsigned char *c,
+static REChar * back_ref (
+   REChar *c,
    int           *flag_param,
    int            emit) {
 
    int  paren_no, c_offset = 0, is_cross_regex = 0;
 
-   unsigned char *ret_val;
+   REChar *ret_val;
 
    /* Implement cross regex backreferences later. */
 
-   /* if (*c == (unsigned char) ('~')) {
+   /* if (*c == (REChar) ('~')) {
       c_offset++;
       is_cross_regex++;
    } */
 
-   paren_no = (int) (*(c + c_offset) - (unsigned char) ('0'));
+   paren_no = (int) (*(c + c_offset) - (REChar) ('0'));
 
-   if (!isdigit (*(c + c_offset)) || /* Only \1, \2, ... \9 are supported.  */
+   if (*(c + c_offset) < '1' || *(c + c_offset) > '9' || /* Only \1, \2, ... \9 are supported.  */
        paren_no == 0) {              /* Should be caught by numeric_escape. */
 
       return NULL;
@@ -2589,13 +2641,13 @@ static unsigned char * back_ref (
          }
       }
 
-      emit_byte ((unsigned char) paren_no);
+      emit_byte ((REChar) paren_no);
 
       if (is_cross_regex || TEST_BIT (Paren_Has_Width, paren_no)) {
          *flag_param |= HAS_WIDTH;
       }
    } else if (emit == CHECK_ESCAPE) {
-      ret_val = (unsigned char *) 1;
+      ret_val = (REChar *) 1;
    } else {
       ret_val = NULL;
    }
@@ -2609,19 +2661,19 @@ static unsigned char * back_ref (
 
  /* Global work variables for `ExecRE'. */
 
-static unsigned char  *Reg_Input;           /* String-input pointer.         */
-static unsigned char  *Start_Of_String;     /* Beginning of input, for ^     */
+static REChar  *Reg_Input;           /* String-input pointer.         */
+static REChar  *Start_Of_String;     /* Beginning of input, for ^     */
                                             /* and < checks.                 */
-static unsigned char  *End_Of_String;       /* Logical end of input (if
+static REChar  *End_Of_String;       /* Logical end of input (if
    				               supplied, till \0 otherwise)  */
-static unsigned char  *Look_Behind_To;      /* Position till were look behind
+static REChar  *Look_Behind_To;      /* Position till were look behind
                                                can safely check back         */
-static unsigned char **Start_Ptr_Ptr;       /* Pointer to `startp' array.    */
-static unsigned char **End_Ptr_Ptr;         /* Ditto for `endp'.             */
-static unsigned char  *Extent_Ptr_FW;       /* Forward extent pointer        */
-static unsigned char  *Extent_Ptr_BW;       /* Backward extent pointer       */
-static unsigned char  *Back_Ref_Start [10]; /* Back_Ref_Start [0] and        */
-static unsigned char  *Back_Ref_End   [10]; /* Back_Ref_End [0] are not      */
+static REChar **Start_Ptr_Ptr;       /* Pointer to `startp' array.    */
+static REChar **End_Ptr_Ptr;         /* Ditto for `endp'.             */
+static REChar  *Extent_Ptr_FW;       /* Forward extent pointer        */
+static REChar  *Extent_Ptr_BW;       /* Backward extent pointer       */
+static REChar  *Back_Ref_Start [10]; /* Back_Ref_Start [0] and        */
+static REChar  *Back_Ref_End   [10]; /* Back_Ref_End [0] are not      */
                                             /* used. This simplifies         */
                                             /* indexing.                     */
 /*
@@ -2636,7 +2688,7 @@ static unsigned char  *Back_Ref_End   [10]; /* Back_Ref_End [0] are not      */
 static int Recursion_Count;          /* Recursion counter */
 static int Recursion_Limit_Exceeded; /* Recursion limit exceeded flag */
 
-#define AT_END_OF_STRING(X) (*(X) == (unsigned char)'\0' ||\
+#define AT_END_OF_STRING(X) (*(X) == (REChar)'\0' ||\
                              (End_Of_String != NULL && (X) >= End_Of_String))
 
 /* static regexp *Cross_Regex_Backref; */
@@ -2656,17 +2708,19 @@ static struct brace_counts *Brace;
 
 /* Default table for determining whether a character is a word delimiter. */
 
-static unsigned char  Default_Delimiters [UCHAR_MAX+1] = {0};
+static REChar  Default_Delimiters [256] = {0};
 
-static unsigned char *Current_Delimiters;  /* Current delimiter table */
+static REChar *Current_Delimiters;  /* Current delimiter table */
 
 /* Forward declarations of functions used by `ExecRE' */
 
-static int             attempt            (regexp *, unsigned char *);
-static int             match              (unsigned char *, int *);
-static unsigned long   greedy             (unsigned char *, long);
-static void            adjustcase         (unsigned char *, int, unsigned char);
-static unsigned char * makeDelimiterTable (unsigned char *, unsigned char *);
+static int             attempt            (regexp *, REChar *);
+static int             match              (REChar *, int *);
+static unsigned long   greedy             (REChar *, long);
+#ifndef NEDIT_WIDE_REGEX
+static void            adjustcase         (REChar *, int, REChar);
+#endif
+static REChar * makeDelimiterTable (REChar *, REChar *);
 
 /*
  * ExecRE - match a `regexp' structure against a string
@@ -2693,18 +2747,23 @@ static unsigned char * makeDelimiterTable (unsigned char *, unsigned char *);
  * larger than or equal to end, if set.
  */
 
-int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
-        char prev_char, char succ_char, const char* delimiters,
-        const char* look_behind_to, const char* match_to)
+int ExecRE(regexp *prog, const REInputChar* string, const REInputChar* end, int reverse,
+        REContextChar prev_char, REContextChar succ_char, const REInputChar* delimiters,
+        const REInputChar* look_behind_to, const REInputChar* match_to)
 {
 
-   register unsigned char  *str;
-            unsigned char **s_ptr;
-            unsigned char **e_ptr;
+   register REChar  *str;
+            REChar **s_ptr;
+            REChar **e_ptr;
                      int    ret_val = 0;
-            unsigned char   tempDelimitTable [256];
+            REChar   tempDelimitTable [256];
                      int    i;
 
+#if defined(HAVE_UTF8PROC) && !defined(NEDIT_WIDE_REGEX)
+   if (prog && prog->utf8)
+       return ExecUtf8RE(prog, string, end, reverse, prev_char, succ_char,
+               delimiters, look_behind_to, match_to);
+#endif
    /* Check for valid parameters. */
 
    if (prog == NULL || string == NULL) {
@@ -2719,8 +2778,8 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       goto SINGLE_RETURN;
    }
 
-   s_ptr = (unsigned char **) prog->startp;
-   e_ptr = (unsigned char **) prog->endp;
+   s_ptr = (REChar **) prog->startp;
+   e_ptr = (REChar **) prog->endp;
 
    /* If caller has supplied delimiters, make a delimiter table */
 
@@ -2728,16 +2787,16 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       Current_Delimiters = Default_Delimiters;
    } else {
       Current_Delimiters = makeDelimiterTable (
-                              (unsigned char *) delimiters,
-                              (unsigned char *) tempDelimitTable);
+                              (REChar *) delimiters,
+                              (REChar *) tempDelimitTable);
    }
 
    /* Remember the logical end of the string. */
    
-   End_Of_String = (unsigned char *) match_to;
+   End_Of_String = (REChar *) match_to;
    
    if (end == NULL && reverse) {
-      for (end = string; !AT_END_OF_STRING((unsigned char*)end); end++) ;
+      for (end = string; !AT_END_OF_STRING((REChar*)end); end++) ;
       succ_char = '\n';
    } else if (end == NULL) {
       succ_char = '\n';
@@ -2749,13 +2808,13 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
 
    /* Remember the beginning of the string for matching BOL */
 
-   Start_Of_String    = (unsigned char *) string;
-   Look_Behind_To     = (unsigned char *) (look_behind_to?look_behind_to:string);
+   Start_Of_String    = (REChar *) string;
+   Look_Behind_To     = (REChar *) (look_behind_to?look_behind_to:string);
 
    Prev_Is_BOL        = ((prev_char == '\n') || (prev_char == '\0') ? 1 : 0);
    Succ_Is_EOL        = ((succ_char == '\n') || (succ_char == '\0') ? 1 : 0);
-   Prev_Is_Delim      = (Current_Delimiters [(unsigned char)prev_char] ? 1 : 0);
-   Succ_Is_Delim      = (Current_Delimiters [(unsigned char)succ_char] ? 1 : 0);
+   Prev_Is_Delim      = (reDelimiter((REChar)prev_char) ? 1 : 0);
+   Succ_Is_Delim      = (reDelimiter((REChar)succ_char) ? 1 : 0);
 
    Total_Paren        = (int) (prog->program [1]);
    Num_Braces         = (int) (prog->program [2]);
@@ -2784,21 +2843,21 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       can only specify \1, \2, ... \9. */
 
    for (i = 9; i > 0; i--) {
-      *s_ptr++ = (unsigned char *) string;
-      *e_ptr++ = (unsigned char *) string;
+      *s_ptr++ = (REChar *) string;
+      *e_ptr++ = (REChar *) string;
    }
 
    if (!reverse) { /* Forward Search */
       if (prog->anchor) {
          /* Search is anchored at BOL */
 
-         if (attempt (prog, (unsigned char *) string)) {
+         if (attempt (prog, (REChar *) string)) {
             ret_val = 1;
             goto SINGLE_RETURN;
          }
 
-         for (str = (unsigned char *) string;
-             !AT_END_OF_STRING(str) && str != (unsigned char *) end && !Recursion_Limit_Exceeded;
+         for (str = (REChar *) string;
+             !AT_END_OF_STRING(str) && str != (REChar *) end && !Recursion_Limit_Exceeded;
               str++) {
 
             if (*str == '\n') {
@@ -2814,11 +2873,11 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       } else if (prog->match_start != '\0') {
          /* We know what char match must start with. */
 
-         for (str = (unsigned char *) string;
-             !AT_END_OF_STRING(str) && str != (unsigned char *) end && !Recursion_Limit_Exceeded;
+         for (str = (REChar *) string;
+             !AT_END_OF_STRING(str) && str != (REChar *) end && !Recursion_Limit_Exceeded;
               str++) {
 
-            if (*str == (unsigned char)prog->match_start) {
+            if (*str == (REChar)prog->match_start) {
                if (attempt (prog, str)) {
                   ret_val = 1;
                   break;
@@ -2830,8 +2889,8 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       } else {
          /* General case */
 
-         for (str = (unsigned char *) string;
-             !AT_END_OF_STRING(str) && str != (unsigned char *) end && !Recursion_Limit_Exceeded;
+         for (str = (REChar *) string;
+             !AT_END_OF_STRING(str) && str != (REChar *) end && !Recursion_Limit_Exceeded;
               str++) {
 
             if (attempt (prog, str)) {
@@ -2841,7 +2900,7 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
          }
          
          /* Beware of a single $ matching \0 */
-         if (!Recursion_Limit_Exceeded && !ret_val && AT_END_OF_STRING(str) && str != (unsigned char *) end) {
+         if (!Recursion_Limit_Exceeded && !ret_val && AT_END_OF_STRING(str) && str != (REChar *) end) {
             if (attempt (prog, str)) {
                ret_val = 1;
             }
@@ -2852,26 +2911,27 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
    } else { /* Search reverse, same as forward, but loops run backward */
       
       /* Make sure that we don't start matching beyond the logical end */
-      if (End_Of_String != NULL && (unsigned char*)end > End_Of_String) {
-         end = (const char*)End_Of_String;
+      if (End_Of_String != NULL && (REChar*)end > End_Of_String) {
+         end = (const REInputChar*)End_Of_String;
       }
 
       if (prog->anchor) {
          /* Search is anchored at BOL */
 
-         for (str = (unsigned char *)(end - 1);
-              str >= (unsigned char *) string && !Recursion_Limit_Exceeded;
+         for (str = (REChar *)end;
+              str >= (REChar *) string && !Recursion_Limit_Exceeded;
               str--) {
 
-            if (*str == '\n') {
-               if (attempt (prog, str + 1)) {
+            if (str == (REChar *) string) break;
+            if (str[-1] == '\n') {
+               if (attempt (prog, str)) {
                   ret_val = 1;
                   goto SINGLE_RETURN;
                }
             }
          }
 
-         if (!Recursion_Limit_Exceeded && attempt (prog, (unsigned char *) string)) {
+         if (!Recursion_Limit_Exceeded && attempt (prog, (REChar *) string)) {
             ret_val = 1;
             goto SINGLE_RETURN;
          }
@@ -2880,30 +2940,32 @@ int ExecRE(regexp *prog, const char* string, const char* end, int reverse,
       } else if (prog->match_start != '\0') {
          /* We know what char match must start with. */
 
-         for (str =  (unsigned char *) end;
-              str >= (unsigned char *) string && !Recursion_Limit_Exceeded;
+         for (str =  (REChar *) end;
+              str >= (REChar *) string && !Recursion_Limit_Exceeded;
               str--) {
 
-            if (*str == (unsigned char)prog->match_start) {
+            if (*str == (REChar)prog->match_start) {
                if (attempt (prog, str)) {
                   ret_val = 1;
                   break;
                }
             }
+            if (str == (REChar *)string) break;
          }
 
          goto SINGLE_RETURN;
       } else {
          /* General case */
 
-         for (str =  (unsigned char *) end;
-              str >= (unsigned char *) string && !Recursion_Limit_Exceeded;
+         for (str =  (REChar *) end;
+              str >= (REChar *) string && !Recursion_Limit_Exceeded;
               str--) {
 
             if (attempt (prog, str)) {
                ret_val = 1;
                break;
             }
+            if (str == (REChar *)string) break;
          }
       }
    }
@@ -2936,11 +2998,11 @@ static int init_ansi_classes (void) {
 
       for (i = 1; i < (int)UCHAR_MAX; i++) {
          if (isalnum (i) || i == underscore) {
-            Word_Char [word_count++] = (unsigned char) i;
+            Word_Char [word_count++] = (REChar) i;
          }
 
          if (isalpha (i)) {
-            Letter_Char [letter_count++] = (unsigned char) i;
+            Letter_Char [letter_count++] = (REChar) i;
          }
 
          /* Note: Whether or not newline is considered to be whitespace is
@@ -2948,7 +3010,7 @@ static int init_ansi_classes (void) {
             here. */
 
          if (isspace (i) && (i != (int) '\n')) {
-            White_Space [space_count++] = (unsigned char) i;
+            White_Space [space_count++] = (REChar) i;
          }
 
          /* Make sure arrays are big enough.  ("- 2" because of zero array
@@ -2964,7 +3026,7 @@ static int init_ansi_classes (void) {
       }
 
       Word_Char   [word_count]  = '\0';
-      Letter_Char [word_count]  = '\0';
+      Letter_Char [letter_count]  = '\0';
       White_Space [space_count] = '\0';
    }
 
@@ -2975,18 +3037,18 @@ static int init_ansi_classes (void) {
  * attempt - try match at specific point, returns: 0 failure, 1 success
  *----------------------------------------------------------------------*/
 
-static int attempt (regexp *prog, unsigned char *string) {
+static int attempt (regexp *prog, REChar *string) {
 
    register          int    i;
-   register unsigned char **s_ptr;
-   register unsigned char **e_ptr;
+   register REChar **s_ptr;
+   register REChar **e_ptr;
    		     int    branch_index = 0; /* Must be set to zero ! */
 
    Reg_Input      = string;
-   Start_Ptr_Ptr  = (unsigned char **) prog->startp;
-   End_Ptr_Ptr    = (unsigned char **) prog->endp;
-   s_ptr          = (unsigned char **) prog->startp;
-   e_ptr          = (unsigned char **) prog->endp;
+   Start_Ptr_Ptr  = (REChar **) prog->startp;
+   End_Ptr_Ptr    = (REChar **) prog->endp;
+   s_ptr          = (REChar **) prog->startp;
+   e_ptr          = (REChar **) prog->endp;
 
    /* Reset the recursion counter. */
    Recursion_Count = 0;
@@ -3001,12 +3063,12 @@ static int attempt (regexp *prog, unsigned char *string) {
       *e_ptr++ = NULL;
    }
 
-   if (match ((unsigned char *) (prog->program + REGEX_START_OFFSET),
+   if (match ((REChar *) (prog->program + REGEX_START_OFFSET),
 	&branch_index)) {
-      prog->startp [0] = (char *) string;
-      prog->endp   [0] = (char *) Reg_Input;     /* <-- One char AFTER  */
-      prog->extentpBW  = (char *) Extent_Ptr_BW; /*     matched string! */
-      prog->extentpFW  = (char *) Extent_Ptr_FW;
+      prog->startp [0] = (REInputChar *) string;
+      prog->endp   [0] = (REInputChar *) Reg_Input;     /* <-- One char AFTER  */
+      prog->extentpBW  = (REInputChar *) Extent_Ptr_BW; /*     matched string! */
+      prog->extentpFW  = (REInputChar *) Extent_Ptr_FW;
       prog->top_branch = branch_index;
 
       return (1);
@@ -3030,10 +3092,10 @@ static int attempt (regexp *prog, unsigned char *string) {
 #define CHECK_RECURSION_LIMIT\
  if (Recursion_Limit_Exceeded) MATCH_RETURN (0);
  
-static int match (unsigned char *prog, int *branch_index_param) {
+static int match (REChar *prog, int *branch_index_param) {
 
-   register unsigned char *scan;  /* Current node. */
-            unsigned char *next;  /* Next node. */
+   register REChar *scan;  /* Current node. */
+            REChar *next;  /* Next node. */
    register int next_ptr_offset;  /* Used by the NEXT_PTR () macro */
    
    if (++Recursion_Count > REGEX_RECURSION_LIMIT) {
@@ -3052,7 +3114,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
       switch (GET_OP_CODE (scan)) {
          case BRANCH:
             {
-               register unsigned char *save;
+               register REChar *save;
 	       register int branch_index_local = 0;
 
                if (GET_OP_CODE (next) != BRANCH) {  /* No choice. */
@@ -3085,7 +3147,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
          case EXACTLY:
             {
                register int            len;
-               register unsigned char *opnd;
+               register REChar *opnd;
 
                opnd = OPERAND (scan);
 
@@ -3093,14 +3155,14 @@ static int match (unsigned char *prog, int *branch_index_param) {
 
                if (*opnd != *Reg_Input) MATCH_RETURN (0);
 
-               len = strlen ((char *) opnd);
+               len = reLength (opnd);
                
                if (End_Of_String != NULL && Reg_Input + len > End_Of_String) {
                    MATCH_RETURN (0);
                }
 
                if (len > 1  &&
-                   strncmp ((char *) opnd, (char *) Reg_Input, len) != 0) {
+                   reCompare (opnd, Reg_Input, len) != 0) {
 
                    MATCH_RETURN (0);
                }
@@ -3112,8 +3174,8 @@ static int match (unsigned char *prog, int *branch_index_param) {
 
          case SIMILAR:
             {
-               register unsigned char *opnd;
-               register unsigned char  test;
+               register REChar *opnd;
+               register REChar  test;
 
                opnd = OPERAND (scan);
 
@@ -3155,14 +3217,14 @@ static int match (unsigned char *prog, int *branch_index_param) {
 	       if (Reg_Input == Start_Of_String) {
 		   prev_is_delim = Prev_Is_Delim;
 	       } else {
-		   prev_is_delim = Current_Delimiters [ *(Reg_Input - 1) ];
+                   prev_is_delim = reDelimiter(*(Reg_Input - 1) );
 	       }
 	       if (prev_is_delim) {
 		   int current_is_delim;
 		   if (AT_END_OF_STRING(Reg_Input)) {
 		      current_is_delim = Succ_Is_Delim;
 		   } else {
-		      current_is_delim = Current_Delimiters [ *Reg_Input ];
+                      current_is_delim = reDelimiter(*Reg_Input );
 		   }
 		   if (!current_is_delim) break;
 	       }
@@ -3178,14 +3240,14 @@ static int match (unsigned char *prog, int *branch_index_param) {
 	       if (Reg_Input == Start_Of_String) {
 		   prev_is_delim = Prev_Is_Delim;
 	       } else {
-		   prev_is_delim = Current_Delimiters [ *(Reg_Input-1) ];
+                   prev_is_delim = reDelimiter(*(Reg_Input-1) );
 	       }
 	       if (!prev_is_delim) {
 		   int current_is_delim;
 		   if (AT_END_OF_STRING(Reg_Input)) {
 		      current_is_delim = Succ_Is_Delim;
 		   } else {
-		      current_is_delim = Current_Delimiters [ *Reg_Input ];
+                      current_is_delim = reDelimiter(*Reg_Input );
 		   }
 		   if (current_is_delim) break;
 	       }
@@ -3200,12 +3262,12 @@ static int match (unsigned char *prog, int *branch_index_param) {
 	       if (Reg_Input == Start_Of_String) {
 		   prev_is_delim = Prev_Is_Delim;
 	       } else {
-		   prev_is_delim = Current_Delimiters [ *(Reg_Input-1) ]; 
+                   prev_is_delim = reDelimiter(*(Reg_Input-1) );
 	       }
 	       if (AT_END_OF_STRING(Reg_Input)) {
 		  current_is_delim = Succ_Is_Delim;
 	       } else {
-		  current_is_delim = Current_Delimiters [ *Reg_Input ];
+                  current_is_delim = reDelimiter(*Reg_Input );
 	       }
 	       if (!(prev_is_delim ^ current_is_delim)) break;
 	    }
@@ -3213,7 +3275,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
             MATCH_RETURN (0);
 
          case IS_DELIM: /* \y (A word delimiter character.) */
-            if (Current_Delimiters [ *Reg_Input ] && 
+            if (reDelimiter(*Reg_Input ) &&
                 !AT_END_OF_STRING(Reg_Input)) {
                Reg_Input++; break;
             }
@@ -3221,7 +3283,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
             MATCH_RETURN (0);
 
          case NOT_DELIM: /* \Y (NOT a word delimiter character.) */
-            if (!Current_Delimiters [ *Reg_Input ] && 
+            if (!reDelimiter(*Reg_Input ) &&
                 !AT_END_OF_STRING(Reg_Input)) {
                Reg_Input++; break;
             }
@@ -3311,7 +3373,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
                                     considers \0 as a member
                                     of the character set. */
 
-            if (strchr ((char *) OPERAND (scan), (int) *Reg_Input) == NULL) {
+            if (reClassFind (OPERAND (scan), (int) *Reg_Input) == NULL) {
                MATCH_RETURN (0);
             }
 
@@ -3323,7 +3385,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
 
             if (AT_END_OF_STRING(Reg_Input)) MATCH_RETURN (0); /* See comment for ANY_OF. */
 
-            if (strchr ((char *) OPERAND (scan), (int) *Reg_Input) != NULL) {
+            if (reClassFind (OPERAND (scan), (int) *Reg_Input) != NULL) {
                MATCH_RETURN (0);
             }
 
@@ -3345,9 +3407,9 @@ static int match (unsigned char *prog, int *branch_index_param) {
             {
                register unsigned long  num_matched = REG_ZERO;
                register unsigned long  min = ULONG_MAX, max = REG_ZERO;
-               register unsigned char *save;
-               register unsigned char  next_char;
-                        unsigned char *next_op;
+               register REChar *save;
+               register REChar  next_char;
+                        REChar *next_op;
                         int            lazy = 0;
 
                /* Lookahead (when possible) to avoid useless match attempts
@@ -3465,7 +3527,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
          /* case X_REGEX_BR:    */
          /* case X_REGEX_BR_CI: *** IMPLEMENT LATER */
             {
-               register unsigned char *captured, *finish;
+               register REChar *captured, *finish;
                                  int   paren_no;
 
                paren_no = (int) *OPERAND (scan);
@@ -3476,10 +3538,10 @@ static int match (unsigned char *prog, int *branch_index_param) {
                   if (Cross_Regex_Backref == NULL) MATCH_RETURN (0);
 
                   captured =
-                     (unsigned char *) Cross_Regex_Backref->startp [paren_no];
+                     (REChar *) Cross_Regex_Backref->startp [paren_no];
 
                   finish =
-                     (unsigned char *) Cross_Regex_Backref->endp   [paren_no];
+                     (REChar *) Cross_Regex_Backref->endp   [paren_no];
                } else { */
                   captured = Back_Ref_Start [paren_no];
                   finish   = Back_Ref_End   [paren_no];
@@ -3513,8 +3575,8 @@ static int match (unsigned char *prog, int *branch_index_param) {
          case POS_AHEAD_OPEN:
          case NEG_AHEAD_OPEN:
             {
-               register unsigned char *save;
-               register unsigned char *saved_end;
+               register REChar *save;
+               register REChar *saved_end;
                                  int   answer;
 
                save      = Reg_Input;
@@ -3565,12 +3627,12 @@ static int match (unsigned char *prog, int *branch_index_param) {
          case POS_BEHIND_OPEN:
          case NEG_BEHIND_OPEN:
             {
-               register unsigned char *save;
+               register REChar *save;
                                  int   answer;
                register 	 int   offset, upper;
                                  int   lower;
                                  int   found = 0;
-                        unsigned char *saved_end;
+                        REChar *saved_end;
 
                save      = Reg_Input;
                saved_end = End_Of_String;
@@ -3654,7 +3716,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
                 (GET_OP_CODE (scan) < OPEN + NSUBEXP)) {
 
                register          int   no;
-               register unsigned char *save;
+               register REChar *save;
 
                no   = GET_OP_CODE (scan) - OPEN;
                save = Reg_Input;
@@ -3678,7 +3740,7 @@ static int match (unsigned char *prog, int *branch_index_param) {
                        (GET_OP_CODE (scan) < CLOSE + NSUBEXP)) {
 
                register          int   no;
-               register unsigned char *save;
+               register REChar *save;
 
                no   = GET_OP_CODE (scan) - CLOSE;
                save = Reg_Input;
@@ -3729,10 +3791,10 @@ static int match (unsigned char *prog, int *branch_index_param) {
  * Returns the actual number of matches.
  *----------------------------------------------------------------------*/
 
-static unsigned long greedy (unsigned char *p, long max) {
+static unsigned long greedy (REChar *p, long max) {
 
-   register unsigned char *input_str;
-   register unsigned char *operand;
+   register REChar *input_str;
+   register REChar *operand;
    register unsigned long  count = REG_ZERO;
    register unsigned long  max_cmp;
 
@@ -3783,7 +3845,7 @@ static unsigned long greedy (unsigned char *p, long max) {
 
       case ANY_OF:  /* [...] character class. */
          while (count < max_cmp                                      &&
-                strchr ((char *) operand, (int) *input_str) != NULL  &&
+                reClassFind (operand, (int) *input_str) != NULL  &&
                 !AT_END_OF_STRING(input_str)) {
 
             count++; input_str++;
@@ -3796,7 +3858,7 @@ static unsigned long greedy (unsigned char *p, long max) {
                        time.) */
 
          while (count < max_cmp                                      &&
-                strchr ((char *) operand, (int) *input_str) == NULL  &&
+                reClassFind (operand, (int) *input_str) == NULL  &&
                 !AT_END_OF_STRING(input_str)) {
 
             count++; input_str++;
@@ -3808,7 +3870,7 @@ static unsigned long greedy (unsigned char *p, long max) {
                          NOTE: '\n' and '\0' are always word delimiters. */
 
          while (count < max_cmp                   && 
-                Current_Delimiters [ *input_str ] &&
+                reDelimiter(*input_str ) &&
                 !AT_END_OF_STRING(input_str)) {
             count++; input_str++;
          }
@@ -3819,7 +3881,7 @@ static unsigned long greedy (unsigned char *p, long max) {
                          NOTE: '\n' and '\0' are always word delimiters. */
 
          while (count < max_cmp                    && 
-                !Current_Delimiters [ *input_str ] &&
+                !reDelimiter(*input_str ) &&
                 !AT_END_OF_STRING(input_str)) {
             count++; input_str++;
          }
@@ -3829,7 +3891,7 @@ static unsigned long greedy (unsigned char *p, long max) {
       case WORD_CHAR: /* \w (word character, alpha-numeric or underscore) */
          while (count < max_cmp                     &&
                 (isalnum ((int) *input_str) ||
-                 *input_str == (unsigned char) '_') &&
+                 *input_str == (REChar) '_') &&
                 !AT_END_OF_STRING(input_str)) {
 
             count++; input_str++;
@@ -3840,8 +3902,8 @@ static unsigned long greedy (unsigned char *p, long max) {
       case NOT_WORD_CHAR:/* \W (NOT a word character) */
          while (count < max_cmp                      &&
                 !isalnum ((int) *input_str)          &&
-                *input_str != (unsigned char) '_'    &&
-                *input_str != (unsigned char) '\n'   &&
+                *input_str != (REChar) '_'    &&
+                *input_str != (REChar) '\n'   &&
                 !AT_END_OF_STRING(input_str)) {
 
             count++; input_str++;
@@ -3954,7 +4016,7 @@ static unsigned long greedy (unsigned char *p, long max) {
  *       description of the macro).
  *----------------------------------------------------------------------*/
 
-static unsigned char * next_ptr (unsigned char *ptr) {
+static REChar * next_ptr (REChar *ptr) {
 
    register int offset;
 
@@ -3978,20 +4040,24 @@ static unsigned char * next_ptr (unsigned char *ptr) {
 **  To give the caller a chance to react to this the function returns False
 **  on any error. The substitution will still be executed.
 */
+#ifndef NEDIT_WIDE_REGEX
 Boolean SubstituteRE(const regexp* prog, const char* source, char* dest,
         int max)
 {
 
-   register unsigned char *src;
-            unsigned char *src_alias;
-   register unsigned char *dst;
-   register unsigned char  c;
-   register unsigned char  test;
+   register REChar *src;
+            REChar *src_alias;
+   register REChar *dst;
+   register REChar  c;
+   register REChar  test;
    register          int   paren_no;
    register          int   len;
-   register unsigned char  chgcase;
+   register REChar  chgcase;
    Boolean anyWarnings = False;
 
+#ifdef HAVE_UTF8PROC
+   if (prog && prog->utf8) return SubstituteUtf8RE(prog, source, dest, max);
+#endif
    if (prog == NULL || source == NULL || dest == NULL) {
       reg_error ("NULL parm to `SubstituteRE\'");
 
@@ -4004,8 +4070,8 @@ Boolean SubstituteRE(const regexp* prog, const char* source, char* dest,
       return False;
    }
 
-   src = (unsigned char *) source;
-   dst = (unsigned char *) dest;
+   src = (REChar *) source;
+   dst = (REChar *) dest;
 
    while ((c = *src++) != '\0') {
       chgcase  = '\0';
@@ -4092,9 +4158,9 @@ Boolean SubstituteRE(const regexp* prog, const char* source, char* dest,
    return !anyWarnings;
 }
 
-static void adjustcase (unsigned char *str, int len, unsigned char chgcase) {
+static void adjustcase (REChar *str, int len, REChar chgcase) {
 
-   register unsigned char *string = str;
+   register REChar *string = str;
             int            i;
 
    /* The tokens \u and \l only modify the first character while the tokens
@@ -4121,6 +4187,8 @@ static void adjustcase (unsigned char *str, int len, unsigned char chgcase) {
    }
 }
 
+#endif
+
 /*----------------------------------------------------------------------*
  * reg_error
  *----------------------------------------------------------------------*/
@@ -4145,15 +4213,15 @@ static void reg_error (char *str) {
  * Return value is a pointer to the table.
  *----------------------------------------------------------------------*/
 
-static unsigned char * makeDelimiterTable (
-   unsigned char *delimiters,
-   unsigned char *table) {
+static REChar * makeDelimiterTable (
+   REChar *delimiters,
+   REChar *table) {
 
-   unsigned char *c;
+   REChar *c;
 
-   memset (table, 0, 256);
+   memset (table, 0, 256 * sizeof(REChar));
 
-   for (c = (unsigned char *) delimiters; *c != '\0'; c++) {
+   for (c = (REChar *) delimiters; c && *c != '\0'; c++) {
       table [*c] = 1;
    }
 
@@ -4171,6 +4239,9 @@ static unsigned char * makeDelimiterTable (
  * Builds a default delimiter table that persists across `ExecRE' calls.
  *----------------------------------------------------------------------*/
 
-void SetREDefaultWordDelimiters (char *delimiters) {
-   makeDelimiterTable ((unsigned char *) delimiters, Default_Delimiters);
+void SetREDefaultWordDelimiters (REInputChar *delimiters) {
+#if defined(HAVE_UTF8PROC) && !defined(NEDIT_WIDE_REGEX)
+   SetUtf8REDefaultWordDelimiters(delimiters);
+#endif
+   makeDelimiterTable ((REChar *) delimiters, Default_Delimiters);
 }

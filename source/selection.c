@@ -29,6 +29,7 @@
 #endif
 
 #include "selection.h"
+#include "selectionCodec.h"
 #include "textBuf.h"
 #include "text.h"
 #include "nedit.h"
@@ -144,14 +145,14 @@ void GotoLineNumber(WindowInfo *window)
     
 void GotoSelectedLineNumber(WindowInfo *window, Time time)
 {
-    XtGetSelectionValue(window->textArea, XA_PRIMARY, XA_STRING,
-    	    gotoCB, window, time);
+    RequestTextSelection(window->textArea, XA_PRIMARY,
+            window->buffer->encoding == BUF_ENCODING_UTF8, time, gotoCB, window);
 }
 
 void OpenSelectedFile(WindowInfo *window, Time time)
 {
-    XtGetSelectionValue(window->textArea, XA_PRIMARY, XA_STRING,
-    	    fileCB, window, time);
+    RequestTextSelection(window->textArea, XA_PRIMARY,
+            window->buffer->encoding == BUF_ENCODING_UTF8, time, fileCB, window);
 }
 
 /*
@@ -174,9 +175,10 @@ char *GetAnySelection(WindowInfo *window)
     }
     
     /* Request the selection value to be delivered to getAnySelectionCB */
-    XtGetSelectionValue(window->textArea, XA_PRIMARY, XA_STRING,
-	    getAnySelectionCB, &selText, 
-	    XtLastTimestampProcessed(XtDisplay(window->textArea)));
+    RequestTextSelection(window->textArea, XA_PRIMARY,
+            window->buffer->encoding == BUF_ENCODING_UTF8,
+            XtLastTimestampProcessed(XtDisplay(window->textArea)),
+            getAnySelectionCB, &selText);
 
     /* Wait for the value to appear */
     while (selText == waitingMarker) {

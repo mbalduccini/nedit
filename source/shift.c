@@ -200,6 +200,28 @@ static void changeCase(WindowInfo *window, int makeUpper)
     char oldChar;
     int cursorPos, start, end, isRect, rectStart, rectEnd;
     
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        char *mapped;
+        int length;
+        if (!BufGetSelectionPos(buf, &start, &end, &isRect, &rectStart, &rectEnd)) {
+            end = TextGetCursorPos(window->lastFocus);
+            if (!end) { XBell(TheDisplay, 0); return; }
+            start = BufPrevGrapheme(buf, end);
+            text = BufGetRange(buf, start, end);
+            mapped = Utf8CaseMap(text, strlen(text), makeUpper, False, True);
+            if (strcmp(text, mapped)) BufReplace(buf, start, end, mapped);
+            TextSetCursorPos(window->lastFocus, start + strlen(mapped));
+        } else {
+            text = BufGetSelectionText(buf);
+            mapped = Utf8CaseMap(text, strlen(text), makeUpper, False, True);
+            length = strlen(mapped);
+            if (strcmp(text, mapped)) BufReplaceSelected(buf, mapped);
+            if (isRect) BufRectSelect(buf, start, buf->primary.end, rectStart, rectEnd);
+            else BufSelect(buf, start, start + length);
+        }
+        NEditFree(text); NEditFree(mapped); return;
+    }
+
     /* Get the selection.  Use character before cursor if no selection */
     if (!BufGetSelectionPos(buf, &start, &end, &isRect, &rectStart, &rectEnd)) {
     	char bufChar[2] = " ";

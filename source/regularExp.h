@@ -49,6 +49,7 @@ typedef struct regexp {
                                Used by syntax highlighting only. */
    char  match_start;       /* Internal use only. */
    char  anchor;            /* Internal use only. */
+   int utf8;               /* Explicit Unicode engine; offsets remain bytes. */
    char  program [1];       /* Unwarranted chumminess with compiler. */
 } regexp;
 
@@ -56,7 +57,8 @@ typedef struct regexp {
 
 typedef enum {
   REDFLT_STANDARD         = 0,
-  REDFLT_CASE_INSENSITIVE = 1
+  REDFLT_CASE_INSENSITIVE = 1,
+  REDFLT_UTF8             = 4
   /* REDFLT_MATCH_NEWLINE = 2    Currently not used. */ 
 } RE_DEFAULT_FLAG;
 
@@ -75,9 +77,9 @@ int ExecRE (
    const char   *end,                 /* Pointer to the end of `string'.  If NULL will
                                    scan from `string' until '\0' is found. */
    int     reverse,             /* Backward search. */
-   char    prev_char,           /* Character immediately prior to `string'.  Set
+   unsigned int prev_char,           /* Character immediately prior to `string'.  Set
                                    to '\n' or '\0' if true beginning of text. */
-   char    succ_char,           /* Character immediately after `end'.  Set
+   unsigned int succ_char,           /* Character immediately after `end'.  Set
                                    to '\n' or '\0' if true beginning of text. */
    const char   *delimiters,    /* Word delimiters to use (NULL for default) */
    const char   *look_behind_to,/* Boundary for look-behind; defaults to

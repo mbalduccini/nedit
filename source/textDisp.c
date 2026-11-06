@@ -430,6 +430,7 @@ textDisp *TextDCreate(Widget widget, Widget hScrollBar, Widget vScrollBar,
     textD->cursorFGGC = XtGetGC(widget, GCForeground, &gcValues);
     textD->lineStarts = (int *)NEditMalloc(sizeof(int) * textD->nVisibleLines);
     textD->lineStarts[0] = 0;
+    textD->calltipLegacyTable = NULL;
     textD->calltipW = NULL;
     textD->calltipShell = NULL;
     textD->calltip.ID = 0;
@@ -511,6 +512,7 @@ void TextDFree(textDisp *textD)
     }
     NEditFree(textD->bgClassPixel);
     NEditFree(textD->bgClass);
+    if (textD->calltipLegacyTable) XmRenderTableFree(textD->calltipLegacyTable);
     NEditFree(textD);
 }
 

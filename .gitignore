@@ -28,3 +28,8 @@ tests/utf8-search.png
 
 tests/test_utf8_sanitize
 tests/test_utf8_application
+
+build-phase2.log
+build-legacy.log
+tests/test_unicode_regex
+tests/test_unicode_regex_sanitize
