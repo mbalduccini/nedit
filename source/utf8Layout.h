@@ -1,6 +1,6 @@
 /* A grapheme-based line map shared by drawing, hit testing, and wrapping.
    Offsets are bytes; columns use Unicode grapheme widths and tab/control expansion;
-   advances are pixels supplied by the renderer. No shaping is performed. */
+   advances are pixels supplied by the renderer, including grapheme shaping. */
 #ifndef NEDIT_UTF8_LAYOUT_H_INCLUDED
 #define NEDIT_UTF8_LAYOUT_H_INCLUDED
 

@@ -62,6 +62,7 @@ typedef struct _textBuffer {
     unsigned long revision;
     int *graphemes, nGraphemes, graphemeStart, graphemeEnd;
     unsigned long graphemeRevision;
+    unsigned char *lineBreaks;
     int gapStart;  	        /* points to the first character of the gap */
     int gapEnd;                 /* points to the first char after the gap */
     selection primary;		/* highlighted areas */
@@ -111,6 +112,8 @@ int BufStartOfGrapheme(const textBuffer *buf, int pos);
 int BufEndOfGrapheme(const textBuffer *buf, int pos);
 int BufNextGrapheme(const textBuffer *buf, int pos);
 int BufPrevGrapheme(const textBuffer *buf, int pos);
+/* UTF8_BREAK_* flags at a byte boundary; only whole grapheme breaks are admitted. */
+int BufLineBreak(const textBuffer *buf, int pos);
 int BufGraphemeWidth(const textBuffer *buf, int pos, int indent);
 char *BufGetTextInRect(textBuffer *buf, int start, int end,
 	int rectStart, int rectEnd);

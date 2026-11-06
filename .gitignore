@@ -33,3 +33,7 @@ build-phase2.log
 build-legacy.log
 tests/test_unicode_regex
 tests/test_unicode_regex_sanitize
+
+build-phase3.log
+tests/utf8-shaping.ppm
+tests/utf8-shaping.png

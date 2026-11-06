@@ -1,13 +1,16 @@
-Classic UTF-8 branch (2026-11-05)
+Classic UTF-8 branch (2026-11-06)
 
-  Phases 1 and 2 are implemented for Linux with Xft/Fontconfig and utf8proc.
-  UTF-8 documents have grapheme editing, Unicode literal and scalar regex
-  search, syntax highlighting, clipboard conversion, case commands, calltips
-  and explicit Unicode macro APIs. Legacy byte APIs and file bytes remain.
-  Literal search uses full case folding; regex and case commands use simple
-  mappings without normalization. Complex-script shaping, bidirectional layout,
-  expanded IME presentation and printing remain phase 3 work.
-  See doc/UTF8-PLAN.md for supported behavior, macro APIs and verification.
+  Phases 1 and 2, plus the requested phase 3 scope, are implemented on Linux.
+  UTF-8 documents support grapheme editing, Unicode search/regex and syntax,
+  clipboard conversion, case commands and explicit Unicode macro APIs.
+  ICU supplies Unicode break opportunities for soft wrap, Auto Newline Wrap
+  and Fill Paragraph. HarfBuzz positions combining accents and joins supported
+  emoji sequences within each grapheme, with Fontconfig fallback/color fonts.
+  File bytes and legacy APIs remain unchanged. Layout stays left to right;
+  contextual Arabic/Indic shaping and bidi are outside the requested scope.
+  Expanded IME preedit presentation and printing remain follow-on work.
+  UTF-8 builds now require ICU and HarfBuzz alongside Xft/Fontconfig/utf8proc.
+  See doc/UTF8-PLAN.md for supported behavior, limits and verification.
 
           Release Notes for NEdit Version 5.7, January 2017
 

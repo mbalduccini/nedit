@@ -32,6 +32,7 @@
 
 #include "shift.h"
 #include "utf8.h"
+#include "utf8Break.h"
 #include "textBuf.h"
 #include "text.h"
 #include "nedit.h"
@@ -626,6 +627,64 @@ static char *fillParagraphs(char *text, int rightMargin, int tabDist,
     return filledText;
 }
 
+/* Reflow without mutating the measured text: byte offsets and its cached
+   Unicode opportunities remain stable. Only plain ASCII separators are removed.
+   Long unbreakable words/glued runs stay intact, as in legacy paragraph fill. */
+static char *wrapFilledUtf8(char *text, int leftMargin, int firstIndent,
+        int rightMargin, int tabDist, char nullSubsChar, int *length, int *nLines)
+{
+    textBuffer *buf = BufCreate();
+    char *out = NEditMalloc((size_t)*length * 2 + 1), *dest = out;
+    int start = 0, p = 0, next, boundary = -1, end = -1, previous;
+    int col = firstIndent, step;
+    char c;
+    BufSetEncoding(buf, BUF_ENCODING_UTF8);
+    buf->tabDist = tabDist;
+    buf->nullSubsChar = nullSubsChar;
+    BufSetAll(buf, text);
+    *nLines = 1;
+    while (p < buf->length) {
+        next = BufNextGrapheme(buf, p);
+        c = BufGetCharacter(buf, p);
+        if (c == '\n') {
+            memcpy(dest, text + start, next - start);
+            dest += next - start;
+            start = p = next;
+            col = leftMargin;
+            boundary = end = -1;
+            (*nLines)++;
+            continue;
+        }
+        if (p > start && (BufLineBreak(buf, p) & UTF8_BREAK_ALLOWED)) {
+            boundary = end = p;
+            previous = BufPrevGrapheme(buf, p);
+            if (previous == p - 1 && (text[previous] == ' ' || text[previous] == '\t'))
+                end = previous;
+        }
+        step = BufGraphemeWidth(buf, p, col);
+        if ((long long)col + step > rightMargin && boundary > start &&
+                !((c == ' ' || c == '\t') && next == p + 1)) {
+            memcpy(dest, text + start, end - start);
+            dest += end - start;
+            *dest++ = '\n';
+            start = p = boundary;
+            col = leftMargin;
+            boundary = end = -1;
+            (*nLines)++;
+            continue;
+        }
+        col = step > INT_MAX - col ? INT_MAX : col + step;
+        p = next;
+    }
+    memcpy(dest, text + start, buf->length - start);
+    dest += buf->length - start;
+    *dest = '\0';
+    *length = dest - out;
+    BufFree(buf);
+    NEditFree(text);
+    return out;
+}
+
 /*
 ** Trim leading space, and arrange text to fill between leftMargin and
 ** rightMargin (except for the first line which fills from firstLineIndent),
@@ -639,8 +698,7 @@ static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
 {
     char *cleanedText, *outText, *indentString, *leadIndentStr, *outPtr, *c, *b;
     int col, cleanedLen, indentLen, leadIndentLen, nLines = 1;
-    int inWhitespace, inMargin, bytes, columns;
-    textBuffer *graphemeBuf = NULL;
+    int inWhitespace, inMargin;
     
     /* remove leading spaces, convert newlines to spaces */
     cleanedText = (char*)NEditMalloc(strlen(text)+1);
@@ -669,47 +727,32 @@ static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
     cleanedLen = outPtr - cleanedText;
     *outPtr = '\0';
     if (encoding == BUF_ENCODING_UTF8) {
-        graphemeBuf = BufCreate();
-        BufSetEncoding(graphemeBuf, encoding);
-        BufSetAll(graphemeBuf, cleanedText);
-    }
-    
-    /* Put back newlines breaking text at word boundaries within the margins.
-       Algorithm: scan through characters, counting columns, and when the
-       margin width is exceeded, search backward for beginning of the word
-       and convert the last whitespace character into a newline */
-    col = firstLineIndent;
-    for (c=cleanedText; *c!='\0'; c += bytes) {
-        bytes = encoding == BUF_ENCODING_UTF8 ? Utf8NextGraphemeZ(c, &columns) : 1;
-    	if (*c == '\n')
-    	    col = leftMargin;
-    	else
-            col += encoding == BUF_ENCODING_UTF8 && bytes > 1 ? columns :
-                BufCharWidth(*c, col, tabDist, nullSubsChar);
-        if (col-1 > rightMargin) {
-            inWhitespace = True;
-            for (b=c; b>=cleanedText && *b!='\n';) {
-                if ((*b == '\t' || *b == ' ') && (!graphemeBuf ||
-                        BufNextGrapheme(graphemeBuf, b-cleanedText) == b-cleanedText+1)) {
-                    if (!inWhitespace) {
-                        *b = '\n';
-                        if (graphemeBuf)
-                            BufReplace(graphemeBuf, b-cleanedText, b-cleanedText+1, "\n");
-                        c = b;
-                        bytes = 1;
-                        col = leftMargin;
-                        nLines++;
-                        break;
-                    }
-                } else
-                    inWhitespace = False;
-                if (b == cleanedText) break;
-                b = graphemeBuf ? cleanedText + BufPrevGrapheme(graphemeBuf,
-                        b-cleanedText) : b-1;
+        cleanedText = wrapFilledUtf8(cleanedText, leftMargin, firstLineIndent,
+                rightMargin, tabDist, nullSubsChar, &cleanedLen, &nLines);
+    } else {
+        /* Preserve the legacy whitespace-only fill algorithm. */
+        col = firstLineIndent;
+        for (c = cleanedText; *c != '\0'; c++) {
+            if (*c == '\n') col = leftMargin;
+            else col += BufCharWidth(*c, col, tabDist, nullSubsChar);
+            if (col - 1 > rightMargin) {
+                inWhitespace = True;
+                for (b = c; b >= cleanedText && *b != '\n'; b--) {
+                    if (*b == '\t' || *b == ' ') {
+                        if (!inWhitespace) {
+                            *b = '\n';
+                            c = b;
+                            col = leftMargin;
+                            nLines++;
+                            break;
+                        }
+                    } else inWhitespace = False;
+                    if (b == cleanedText) break;
+                }
             }
         }
+        nLines++;
     }
-    nLines++;
 
     /* produce a string to prepend to lines to indent them to the left margin */
     leadIndentStr = makeIndentString(firstLineIndent, tabDist,
@@ -739,7 +782,6 @@ static char *fillParagraph(char *text, int leftMargin, int firstLineIndent,
     
     /* clean up, return result */
     NEditFree(cleanedText);
-    if (graphemeBuf) BufFree(graphemeBuf);
     NEditFree(leadIndentStr);
     NEditFree(indentString);
     *filledLen = outPtr - outText;

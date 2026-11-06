@@ -1,6 +1,7 @@
 #include "utf8.h"
 #include "textBuf.h"
 #include "utf8Layout.h"
+#include "utf8Break.h"
 #include "../util/nedit_malloc.h"
 
 #include <assert.h>
@@ -313,6 +314,56 @@ static void testGraphemesAndRectangles(void)
     BufFree(buf);
 }
 
+static void testLineBreaks(void)
+{
+    textBuffer *buf = BufCreate();
+    const char *cases[] = { "中文。日本", "中（文）日", "a\xc2\xa0" "b c",
+        "a\xe2\x81\xa0" "b c", "ab\xe2\x80\x8b" "cd", "e\xcc\x81中",
+        "🇺🇸👩‍💻中", "a\x80中" };
+    int i, gap, p, next, flags;
+    BufSetEncoding(buf, BUF_ENCODING_UTF8);
+    assert(!Utf8LineBreaks(NULL, 0));
+    assert(!Utf8LineBreaks("", -1));
+    for (i = 0; i < (int)(sizeof(cases)/sizeof(*cases)); i++) {
+        BufSetAll(buf, cases[i]);
+        for (gap = 0; gap <= buf->length; gap++) {
+            BufInsert(buf, gap, "");
+            for (p = 0; p < buf->length; p++) {
+                flags = BufLineBreak(buf, p);
+                if (flags) assert(BufStartOfGrapheme(buf, p) == p);
+            }
+            assert(BufLineBreak(buf, buf->length) & UTF8_BREAK_ALLOWED);
+        }
+    }
+    BufSetAll(buf, "中文。日本");
+    assert(BufLineBreak(buf, 3) & UTF8_BREAK_ALLOWED);
+    assert(!BufLineBreak(buf, 6)); /* Never start a line with closing punctuation. */
+    assert(BufLineBreak(buf, 9) & UTF8_BREAK_ALLOWED);
+    BufSetAll(buf, "中（文）日");
+    assert(!(BufLineBreak(buf, 6) & (UTF8_BREAK_ALLOWED | UTF8_BREAK_EMERGENCY)));
+    assert(!BufLineBreak(buf, 9));
+    BufSetAll(buf, "（\xcc\x81文");
+    assert(!BufLineBreak(buf, 5)); /* Attached marks retain opener semantics. */
+    BufSetAll(buf, "a\xc2\xa0" "b c");
+    for (p = 1; p <= 3; p++) assert(!BufLineBreak(buf, p));
+    BufReplace(buf, 1, 3, " ");
+    assert(BufLineBreak(buf, 2) & UTF8_BREAK_ALLOWED); /* Edit invalidates map. */
+    BufSetAll(buf, "a\xe2\x81\xa0" "b c");
+    for (p = 1; p <= 4; p++) assert(!BufLineBreak(buf, p));
+    BufSetAll(buf, "ab\xe2\x80\x8b" "cd");
+    assert(BufLineBreak(buf, 5) & UTF8_BREAK_ALLOWED);
+    BufSetAll(buf, "e\xcc\x81中🇺🇸👩‍💻");
+    for (p = 0; p < buf->length; p = next) {
+        next = BufNextGrapheme(buf, p);
+        for (i = p + 1; i < next; i++) assert(!BufLineBreak(buf, i));
+    }
+    BufSetAll(buf, "中\n文。日");
+    assert(BufLineBreak(buf, 3) & UTF8_BREAK_ALLOWED);
+    assert(!BufLineBreak(buf, 7));
+    assert(BufLineBreak(buf, 10) & UTF8_BREAK_ALLOWED);
+    BufFree(buf);
+}
+
 int main(void)
 {
     testDecoder();
@@ -320,6 +371,7 @@ int main(void)
     testMalformedAndColumns();
     testLayout();
     testGraphemesAndRectangles();
+    testLineBreaks();
     puts("UTF-8 decoder, gap-buffer, and line-layout tests passed (all Unicode scalars).");
     return 0;
 }

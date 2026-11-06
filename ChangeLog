@@ -1,3 +1,13 @@
+2026-11-06  classic-UTF-8
+
+        * Complete the requested phase 3 scope: cached ICU Unicode line-break
+          opportunities for soft wrap, Auto Newline Wrap and paragraph fill;
+          protect punctuation/glue and grapheme edges. Add HarfBuzz grapheme
+          shaping with whole-cluster/color font fallback and shared glyph
+          measurement/drawing caches. Verify raster output, emoji substitutions,
+          wrapping, file bytes, sanitizers and legacy mode. Bidi and contextual
+          Arabic/Indic layout remain outside the user-requested scope.
+
 2026-11-05  classic-UTF-8
 
         * Complete phase 2: standard X text selection/clipboard conversion and

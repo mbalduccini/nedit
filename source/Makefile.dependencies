@@ -101,3 +101,6 @@ search.o macro.o shift.o highlight.o: utf8.h
 
 unicodeRegex.o: unicodeRegex.c unicodeRegex.h regularExp.c regularExp.h utf8.h ../util/nedit_malloc.h
 regularExp.o highlight.o: unicodeRegex.h
+
+utf8Break.o: utf8Break.c utf8Break.h utf8.h ../util/nedit_malloc.h
+textBuf.o text.o textDisp.o shift.o: utf8Break.h

@@ -55,7 +55,8 @@ currently treats these as interchangeable in many places.
    for the UTF-8 renderer. These libraries are installed in this workspace.
    Keep the existing X core-font renderer for legacy mode and builds without
    the new backend. Xft supports glyph drawing, not complex-script shaping or
-   bidirectional layout; Pango/HarfBuzz and a bidi engine are later decisions.
+   bidirectional layout. Phase 3 uses HarfBuzz for grapheme shaping and ICU for
+   line breaking; bidirectional layout is outside the requested scope.
 6. **Keep compatibility boundaries visible in the code and documentation.**
    Existing macros may deliberately manipulate byte offsets. Do not globally
    snap every low-level buffer mutation, reinterpret their indices, or change
@@ -148,17 +149,22 @@ Primary files: `source/textDisp.c`, `source/textBuf.c`, `source/text.c`,
   can still produce malformed UTF-8; do not claim they are fully supported
   before those paths have been migrated.
 
-## Phase 3: broad multilingual layout
+## Phase 3: Unicode wrapping and grapheme shaping
 
-- Extend the Phase 1 grapheme mapping with script shaping, Unicode line
-  breaking, bidirectional layout, and visual/logical cursor mapping.
-- Assess a Pango-based layout layer or HarfBuzz plus a bidi library. Keep the
-  byte-to-layout mapping so selections, styles, and undo still refer to the
-  original document bytes.
-- Cover Arabic, Hebrew, Indic scripts, combining sequences, emoji/ZWJ
-  sequences, fallback fonts, and input-method preedit/commit behavior.
-- Extend printing/export and dialogs as needed; editor-area Unicode rendering
-  alone does not automatically update every Motif widget or output path.
+The user narrowed this phase to line breaking, combining accents and joined
+emoji. Bidirectional layout and Arabic/Indic contextual shaping are outside the
+requested scope; they are no longer acceptance requirements for this branch.
+
+- Use ICU's Unicode line-break opportunities while retaining byte offsets and
+  extended grapheme boundaries. Apply them to soft wrap, Auto Newline Wrap and
+  Fill Paragraph, including CJK punctuation, nonbreaking spaces and word joiners.
+- Use HarfBuzz for glyph substitutions and mark positioning within a grapheme.
+  Select a fallback font covering the whole grapheme when available. Cache the
+  glyph positions and share their advance between drawing and hit testing.
+- Verify accents, flags, skin tones, keycaps and emoji/ZWJ sequences with actual
+  glyph output, cursor/selection alignment, byte preservation and legacy builds.
+- Keep printing/export and external IME-specific preedit presentation as separate
+  follow-on work. Search dialogs continue using Motif's own Xft rendition.
 
 ## Verification and acceptance
 
@@ -188,8 +194,8 @@ Acceptance for the first usable phase:
 ## Trying this implementation
 
 Work is on branch `classic-UTF-8`. Build on Linux/Termux with `make linux`;
-Xft, Fontconfig, utf8proc development files, and `pkg-config` are required. Launch the
-workspace binary explicitly:
+Xft, Fontconfig, utf8proc, HarfBuzz and ICU development files, plus `pkg-config`,
+are required. Launch the workspace binary explicitly:
 
 ```sh
 ./source/nedit -svrname '' -utf8 -utf8font 'monospace:size=12' path/to/file
@@ -363,18 +369,50 @@ opens, edits and saves in roughly 0.6-1.2 seconds. These are local measurements,
 not a performance guarantee for all fonts, files or machines. Long wrapped files
 still use NEdit's established whole-document wrap counting.
 
+## Phase 3 completion (requested scope)
+
+Unicode line breaking and grapheme shaping are implemented for Linux/Xft.
+
+- ICU supplies Unicode line-break opportunities (UAX #14, root locale); NEdit
+  admits only extended grapheme boundaries. Window/explicit-margin soft wrap,
+  Auto Newline Wrap and Fill Paragraph share these opportunities. CJK can wrap
+  without spaces, closing punctuation stays with preceding text, and opening
+  punctuation stays with following text. Soft wrap changes only the view; auto
+  wrap and fill intentionally insert newlines. Plain ASCII separators can be
+  replaced/hidden, while Unicode spaces and whitespace with marks retain bytes.
+- Soft wrap retains emergency breaks for long ordinary words. It protects
+  punctuation and keeps an entire unbreakable run containing NBSP or WORD JOINER
+  intact, even beyond the margin. Auto wrap/fill keep unbreakable words intact.
+  Oversize graphemes and glued runs can exceed the viewport; horizontal scrolling
+  remains available. There is no automatic hyphenation or language preference.
+  Paragraph fill retains its existing indentation and ASCII newline-joining
+  policy; its choices can change because CJK now offers additional break points.
+- HarfBuzz shapes each editable grapheme, including combining mark attachment
+  and supported emoji/ZWJ, flag, modifier and keycap substitutions. Fontconfig
+  chooses a face covering the whole cluster, preferring color emoji for emoji
+  presentation; text presentation selectors retain normal font priority.
+  Glyphs depend on installed fonts (Noto Color Emoji was used for verification).
+  A cluster without a face covering all visible scalars uses scalar fallback.
+- Drawing and measurement share a bounded glyph cache and advances. Cursor
+  movement, selection, rectangles, style lookup and logical columns remain
+  grapheme/byte based. HarfBuzz's internal normalization does not change file
+  bytes; composed and decomposed accents still search as distinct strings.
+- Shaping is confined to one grapheme. Cross-grapheme ligatures/kerning and
+  contextual script shaping are not implemented. Display order stays left to
+  right. Bidirectional layout and Arabic/Indic support are outside this scope.
+
+Verification includes byte-indexed break maps across every gap position and
+edit invalidation; real soft/hard/fill wrapping with CJK punctuation, glue,
+joiners and emoji; composed/decomposed pixel equality; glyph-count checks for
+emoji ligatures; long mark sequences; styles and cursor hit tests. The isolated
+Xvfb screenshot `tests/utf8-shaping.ppm` shows accents and joined color emoji.
+
 ## Follow-on work and supported limits
 
-Phase 3 remains open:
-
-- Grapheme-safe editing is implemented; shaping, bidirectional layout, Unicode
-  line breaking and visual/logical navigation for complex scripts are not.
-  Simple combining marks draw over their base; typographic mark attachment,
-  Indic/Arabic shaping, emoji ligatures and bidirectional Hebrew need phase 3.
 - Motif owns preedit display. UTF-8 committed input and overflow handling are
-  covered; external IME-specific preedit presentations remain phase 3 work.
-  Printing/export and Motif dialogs beyond the search fields and calltips still
-  use their established font paths.
+  covered; external IME-specific preedit presentations remain follow-on work.
+  Printing/export and Motif dialogs beyond search fields and calltips still use
+  their established font paths.
 - Unicode case conversion uses simple mappings, without locale-specific Turkish
   casing or context-sensitive Greek final-sigma conversion. Literal search and
   `unicode_casefold()` support full folding; regex uses simple folding.

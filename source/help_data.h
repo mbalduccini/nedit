@@ -2,7 +2,7 @@
 *                                                                              *
 * help_data.h --  Nirvana Editor help module data                              *
 *                                                                              *
-                 Generated on Nov 5, 2026 (Do NOT edit!)
+                 Generated on Nov 6, 2026 (Do NOT edit!)
                  Source of content from file help.etx
 *                                                                              *
 * Copyright (c) 1999-2026 Mark Edel                                            *
@@ -4152,8 +4152,12 @@ static char * htxt_resources [] = {
 "Search and syntax patterns use Unicode scalars; literal search has full case ",
 "folding and regex has simple case folding. Clipboard transfers negotiate ",
 "UTF8_STRING, COMPOUND_TEXT and Latin-1 STRING. Unicode case commands, macro ",
-"APIs and calltips are supported. Shaping, bidi and printing remain follow-on ",
-"work. Use a UTF-8 locale for typed text. ",
+"APIs and calltips are supported. Unicode break opportunities apply to soft ",
+"wrap, Auto Newline Wrap and Fill Paragraph, including CJK punctuation, ",
+"nonbreaking spaces and word joiners. Accents and joined emoji are shaped ",
+"within each grapheme when fonts support them. Display order remains left to ",
+"right; contextual script shaping and printing remain unsupported. Use a ",
+"UTF-8 locale for typed text. ",
 "\n\n",
 "\01A\01Bnedit.utf8Font\01A: monospace:size=12\n",
 "\01I\n",
@@ -5808,4 +5812,4 @@ Href H_R [] =
     {NULL,     14799, HELP_PREFERENCES,   "Autoload Files"}
 };
 
-static const char * NEditVersion = "NEdit 5.7 classic-UTF-8\nNov 5, 2026\n";
+static const char * NEditVersion = "NEdit 5.7 classic-UTF-8Nov 6, 2026\nNov 6, 2026\n";

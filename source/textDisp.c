@@ -33,6 +33,7 @@
 #include "textDisp.h"
 #include "textBuf.h"
 #include "utf8.h"
+#include "utf8Break.h"
 #include "text.h"
 #include "textP.h"
 #include "nedit.h"
@@ -3791,7 +3792,8 @@ static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
         int styleOffset, int *retPos, int *retLines, int *retStart, int *retEnd)
 {
     int start = isLineStart ? startPos : TextDStartOfLine(textD, startPos);
-    int p = start, lines = 0, columns = 0, pixels = 0, lastSpace = -1;
+    int p = start, lines = 0, columns = 0, pixels = 0;
+    int lastBreak = -1, breakStart = -1, emergency = -1, flags, previous;
     int next, end, newStart, advance, step, valid, length;
     unsigned long scalar;
     char expanded[MAX_EXP_CHAR_LEN];
@@ -3803,10 +3805,23 @@ static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
             end = p;
             newStart = next;
         } else {
-            /* Replacing a whitespace cell with a wrap break must not
-               detach combining marks from that whitespace. */
-            if ((scalar == ' ' || scalar == '\t') && next == p + 1)
-                lastSpace = p;
+            flags = BufLineBreak(buf, p);
+            if (p > start && (flags & UTF8_BREAK_ALLOWED)) {
+                lastBreak = breakStart = p;
+                previous = BufPrevGrapheme(buf, p);
+                if (previous == p - 1 && (BufGetCharacter(buf, previous) == ' ' ||
+                        BufGetCharacter(buf, previous) == '\t')) lastBreak = previous;
+            }
+            if (p > start && (flags & UTF8_BREAK_EMERGENCY) &&
+                    (emergency < 0 || (textD->wrapMargin > 0
+                     ? columns <= textD->wrapMargin : pixels <= textD->width)))
+                emergency = p;
+            /* Hide only a plain ASCII separator, preserving attached marks. */
+            if ((scalar == ' ' || scalar == '\t') && next == p + 1 &&
+                    (BufLineBreak(buf, next) & UTF8_BREAK_ALLOWED)) {
+                lastBreak = p;
+                breakStart = next;
+            }
             step = BufGraphemeWidth(buf, p, columns);
             if (scalar == '\t') {
                 expanded[0] = ' ';
@@ -3830,14 +3845,14 @@ static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
             if ((textD->wrapMargin > 0 &&
                     step > textD->wrapMargin - columns) ||
                     (textD->wrapMargin == 0 && advance > textD->width - pixels)) {
-                if (lastSpace >= start) {
-                    end = lastSpace;
-                    newStart = lastSpace + 1;
-                } else if (p > start) {
-                    end = p;
-                    newStart = p;
+                if (lastBreak >= start && breakStart > start) {
+                    end = lastBreak;
+                    newStart = breakStart;
+                } else if (emergency > start) {
+                    end = newStart = emergency;
                 } else {
-                    /* Even a scalar wider than the viewport must progress. */
+                    /* Oversize graphemes and glued/punctuation runs may exceed
+                       the viewport until a legal boundary; always progress. */
                     columns = step > INT_MAX-columns ? INT_MAX : columns + step;
                     pixels = advance > INT_MAX-pixels ? INT_MAX : pixels + advance;
                     p = next;
@@ -3863,7 +3878,7 @@ static void wrappedUtf8Counter(const textDisp *textD, const textBuffer *buf,
             return;
         }
         start = p = newStart;
-        columns = pixels = 0; lastSpace = -1;
+        columns = pixels = 0; lastBreak = breakStart = emergency = -1;
     }
     *retPos = buf->length; *retLines = lines;
     *retStart = start; *retEnd = buf->length;
@@ -4105,8 +4120,11 @@ static int wrapUsesCharacter(textDisp *textD, int lineEndPos)
 */
 static void hideOrShowHScrollBar(textDisp *textD)
 {
-    if (textD->continuousWrap && (textD->wrapMargin == 0 || textD->wrapMargin *
-    	    textD->fontStruct->max_bounds.width < textD->width))
+    /* Unicode glue and oversize graphemes may exceed a wrap margin. Keep
+       horizontal scrolling available so their remaining text is reachable. */
+    if (!utf8Active(textD) && textD->continuousWrap &&
+            (textD->wrapMargin == 0 || textD->wrapMargin *
+             textD->fontStruct->max_bounds.width < textD->width))
     	XtUnmanageChild(textD->hScrollBar);
     else
     	XtManageChild(textD->hScrollBar);

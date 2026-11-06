@@ -13,7 +13,7 @@ The decoder/buffer/layout checks do not require an X display. They cover every
 Unicode scalar, malformed encodings, gap splits, legacy mode, logical columns,
 selection boundaries, tab expansion, and pixel mappings with different advances.
 
-The widget/application checks require Python, Xvfb, Xft, Fontconfig, and utf8proc. They
+The widget/application checks require Python, Xvfb, Xft, Fontconfig, utf8proc, ICU and HarfBuzz. They
 create an isolated X display and temporary application preferences; the user's
 running editor, files, and preferences are not used. Glyph fallback checks require
 installed fonts containing U+4E2D and U+10400 (Noto CJK and Noto Deseret are
@@ -74,3 +74,13 @@ across scalars. Calltip fonts restore in legacy mode. Real macros check each
 Unicode API, byte compatibility, search/split flags and clipboard; shell-filter
 round trips preserve malformed bytes. A 1 MB file with Unicode syntax matches
 measures open/edit/save performance on the isolated display.
+
+Phase 3 checks cover ICU break opportunities, punctuation, NBSP/word joiners,
+zero-width spaces, malformed bytes, grapheme filtering, gap positions and edit
+invalidation. Real widget and application paths verify soft/hard/fill wrapping
+and byte preservation. HarfBuzz glyph probes check accents, joined emoji,
+flags, modifiers and keycaps (requires DejaVu Sans and Noto Color Emoji).
+Composed/decomposed accents are compared pixel-for-pixel, and actual glyph ink
+and background are required. `tests/utf8-shaping.ppm` is an ignored screenshot
+for visual inspection. The pixel fixture keeps auxiliary scrollbars in a
+separate shell so their management cannot unmap the text window.

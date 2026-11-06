@@ -78,7 +78,7 @@ def check_phase_one_files(env):
         assert path.read_bytes() == text, "Rectangle shift/undo changed bytes"
         path.write_bytes("éé 中中 aa bb".encode())
         run(path, 'select_all()\nfill_paragraph()', ["-xrm", "nedit.wrapMargin: 5"])
-        assert path.read_bytes() == "éé\n中中\naa bb".encode(), "Fill ignored Unicode columns"
+        assert path.read_bytes() == "éé 中\n中 aa\nbb".encode(), "Fill ignored Unicode break opportunities/columns"
         path.write_bytes("aa \u0301 bb cc".encode())
         run(path, 'select_all()\nfill_paragraph()', ["-xrm", "nedit.wrapMargin: 3"])
         assert path.read_bytes() == "aa \u0301\nbb\ncc".encode(), "Fill split a combining sequence"
@@ -111,6 +111,43 @@ def check_phase_one_files(env):
         assert path.read_bytes() == data, "Large-file round trip failed"
         print(f"{len(data)/1000000:.1f} MB UTF-8 open/edit/save: {time.monotonic()-began:.2f} seconds.")
         print("Phase 1 CRLF/include, rectangle shift, fill, smart-indent, encoding/font/split-view and autosave checks passed.")
+
+
+def check_phase_three(env):
+    with tempfile.TemporaryDirectory(prefix="utf8-phase3-", dir=tests_dir) as temp:
+        task_dir = Path(temp)
+        prefs = task_dir / "prefs"
+        prefs.mkdir()
+        editor_env = dict(env, NEDIT_HOME=str(prefs), LC_ALL="C.UTF-8")
+        binary = str(tests_dir.parent / "source" / "nedit")
+        path = task_dir / "wrapping.txt"
+        cases = [
+            ("中文。日本", 4, "中\n文。\n日本"),
+            ("中（文）日", 4, "中\n（文）\n日"),
+            ("a\u00a0b c", 2, "a\u00a0b\nc"),
+            ("a\u2060b c", 1, "a\u2060b\nc"),
+            ("ab\u200bcd", 2, "ab\u200b\ncd"),
+            ("🇺🇸👩‍💻中", 2, "🇺🇸\n👩‍💻\n中"),
+            ("longword next", 3, "longword\nnext"),
+            ("  中文。日本", 6, "  中\n  文。\n  日本"),
+        ]
+        for text, margin, expected in cases:
+            path.write_bytes(text.encode())
+            command = "select_all()\nfill_paragraph()\nsave()\nexit()\n"
+            subprocess.run([binary, "-svrname", "", "-utf8", "-nowrap",
+                            "-xrm", "nedit.appendLF: False", "-xrm",
+                            f"nedit.wrapMargin: {margin}", "-do", command, str(path)],
+                           cwd=task_dir, env=editor_env, check=True, timeout=30)
+            assert path.read_bytes() == expected.encode(), (text, path.read_bytes(), expected)
+        # Viewing with soft wrap must preserve every original byte.
+        original = "中文。a\u00a0b 🇺🇸👩‍💻 é\n".encode() + b"\x80\0"
+        path.write_bytes(original)
+        subprocess.run([binary, "-svrname", "", "-utf8", "-wrap", "-xrm",
+                        "nedit.wrapMargin: 2", "-xrm", "nedit.appendLF: False",
+                        "-do", "end_of_file()\ninsert_string(\"é\")\nundo()\nsave()\nexit()\n", str(path)],
+                       cwd=task_dir, env=editor_env, check=True, timeout=30)
+        assert path.read_bytes() == original
+        print("Unicode punctuation/glue/emoji paragraph fill and wrapped byte preservation passed.")
 
 
 def check_phase_two(env):
@@ -219,6 +256,7 @@ with tempfile.TemporaryFile(mode="w+") as log:
         check_editor(env)
         check_phase_one_files(env)
         check_phase_two(env)
+        check_phase_three(env)
     finally:
         server.terminate()
         try:

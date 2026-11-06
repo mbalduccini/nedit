@@ -32,6 +32,7 @@
 
 #include "textBuf.h"
 #include "utf8.h"
+#include "utf8Break.h"
 #include "rangeset.h"
 #include "../util/nedit_malloc.h"
 
@@ -149,6 +150,7 @@ textBuffer *BufCreatePreallocated(int requestedSize)
     buf->encoding = BUF_ENCODING_8BIT;
     buf->revision = 1;
     buf->graphemes = NULL;
+    buf->lineBreaks = NULL;
     buf->nGraphemes = 0;
     buf->graphemeRevision = 0;
     buf->buf = (char*) NEditMalloc(requestedSize + PREFERRED_GAP_SIZE + 1);
@@ -190,6 +192,7 @@ void BufFree(textBuffer *buf)
 {
     NEditFree(buf->buf);
     NEditFree(buf->graphemes);
+    NEditFree(buf->lineBreaks);
     if (buf->nModifyProcs != 0) {
     	NEditFree(buf->modifyProcs);
     	NEditFree(buf->cbArgs);
@@ -445,6 +448,8 @@ static int graphemeIndex(const textBuffer *buffer, int pos)
         start = BufStartOfLine(buf, pos);
         end = BufEndOfLine(buf, pos);
         text = BufGetRange(buf, start, end);
+        NEditFree(buf->lineBreaks);
+        buf->lineBreaks = NULL;
         capacity = 128;
         NEditFree(buf->graphemes);
         buf->graphemes = (int *)NEditMalloc(capacity * sizeof(int));
@@ -509,6 +514,25 @@ int BufPrevGrapheme(const textBuffer *buf, int pos)
     if (buf->graphemes[i] < pos) return buf->graphemes[i];
     if (i) return buf->graphemes[i - 1];
     return max(0, pos - 1); /* newline before this physical line */
+}
+
+/* The physical-line break map shares grapheme cache invalidation and bounds. */
+int BufLineBreak(const textBuffer *buf, int pos)
+{
+    int index;
+    if (pos < 0 || pos > buf->length) return 0;
+    if (buf->encoding != BUF_ENCODING_UTF8)
+        return pos && (BufGetCharacter(buf, pos - 1) == ' ' ||
+                BufGetCharacter(buf, pos - 1) == '\t') ? UTF8_BREAK_ALLOWED : 0;
+    index = graphemeIndex(buf, pos);
+    if (buf->graphemes[index] != pos) return 0;
+    if (!buf->lineBreaks) {
+        char *text = BufGetRange(buf, buf->graphemeStart, buf->graphemeEnd);
+        ((textBuffer *)buf)->lineBreaks = Utf8LineBreaks(text,
+                buf->graphemeEnd - buf->graphemeStart);
+        NEditFree(text);
+    }
+    return buf->lineBreaks[pos - buf->graphemeStart];
 }
 
 int BufGraphemeWidth(const textBuffer *buf, int pos, int indent)

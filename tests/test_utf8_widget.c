@@ -8,6 +8,7 @@
 #include "undo.h"
 #include "textDrag.h"
 #include "utf8.h"
+#include <hb.h>
 #include <time.h>
 #include <Xm/XmIm.h>
 #include "highlight.h"
@@ -25,6 +26,22 @@
    Widget, buffer, selection, display, and undo implementations are real. */
 /* Force the documented XIM overflow contract once, while retaining real
    Motif lookup for every other key. This verifies complete long commits. */
+static unsigned int shapedGlyphCount;
+static int missingShapedGlyph;
+void __real_hb_shape(hb_font_t *font, hb_buffer_t *buffer,
+        const hb_feature_t *features, unsigned int count);
+void __wrap_hb_shape(hb_font_t *font, hb_buffer_t *buffer,
+        const hb_feature_t *features, unsigned int count)
+{
+    hb_glyph_info_t *glyphs;
+    unsigned int i;
+    __real_hb_shape(font, buffer, features, count);
+    glyphs = hb_buffer_get_glyph_infos(buffer, &shapedGlyphCount);
+    missingShapedGlyph = 0;
+    for (i = 0; i < shapedGlyphCount; i++)
+        if (!glyphs[i].codepoint) missingShapedGlyph = 1;
+}
+
 static int overflowCommit;
 int __real_XmImMbLookupString(Widget w, XKeyPressedEvent *event, char *text,
         int capacity, KeySym *keysym, Status *status);
@@ -102,6 +119,10 @@ static void action(Widget text, const char *name)
 
 static void repaint(textDisp *display)
 {
+    XRaiseWindow(XtDisplay(display->w), XtWindow(XtParent(display->w)));
+    XSync(XtDisplay(display->w), False);
+    while (XtAppPending(XtWidgetToApplicationContext(display->w)))
+        XtAppProcessEvent(XtWidgetToApplicationContext(display->w), XtIMAll);
     TextDBlankCursor(display);
     TextDRedisplayRect(display, display->left, display->top,
             display->width, display->height);
@@ -119,12 +140,12 @@ static void checkPixels(textDisp *display, int x, int width)
         for (dx = 0; dx < image->width; dx++)
             if (XGetPixel(image, dx, dy) != display->bgPixel) ink++;
     XDestroyImage(image);
-    assert(ink > 0);
+    assert(ink > 0 && ink < width * (display->ascent + display->descent));
 }
 
-static void screenshot(textDisp *display)
+static void screenshot(textDisp *display, const char *path)
 {
-    FILE *out = fopen("utf8-widget.ppm", "wb");
+    FILE *out = fopen(path, "wb");
     XImage *image;
     int x, y;
     unsigned long pixel;
@@ -327,7 +348,7 @@ static void checkLayout(textDisp *display)
 
     BufSetAll(buf, "UTF-8 in classic NEdit\nLatin: caf\xc3\xa9   Greek: \xce\xb1\xce\xb2\xce\xb3   Cyrillic: \xd0\x96\xd0\xb4\nCJK: \xe4\xb8\xad\xe6\x96\x87   Supplementary: \xf0\x90\x90\x80\nCombining: e\xcc\x81 a\xcc\x88   Tabs:\t\xc3\xa9\tZ   Invalid bytes: \x80\xe2\x82");
     repaint(display);
-    screenshot(display);
+    screenshot(display, "utf8-widget.ppm");
 }
 
 static void checkPhaseOne(textDisp *display, WindowInfo *window)
@@ -471,10 +492,122 @@ static void checkPhaseOne(textDisp *display, WindowInfo *window)
     assert(display->utf8Font != NULL);
 }
 
+/* Raster equality verifies that HarfBuzz positions/normalizes marks in drawing,
+   in addition to width and hit-test consistency. Document bytes stay distinct. */
+static XImage *clusterImage(textDisp *display, const char *text)
+{
+    BufSetAll(display->buffer, text);
+    TextDSetInsertPosition(display, 0);
+    repaint(display);
+    checkPixels(display, display->left, 24);
+    return XGetImage(XtDisplay(display->w), XtWindow(display->w), display->left,
+            display->top, 64, display->ascent + display->descent, AllPlanes, ZPixmap);
+}
+
+static void checkPhaseThree(textDisp *display)
+{
+    textBuffer *buf = display->buffer;
+    int x, y, nx, ny, p, next, i, j;
+    int width = display->width, height = display->height;
+    XImage *composed, *decomposed;
+    const char *shaped[] = { "e\xcc\x81", "x\xcc\x81", "🇺🇸", "👩‍💻", "👍🏽", "1️⃣" };
+    const unsigned int glyphCounts[] = {1, 2, 1, 1, 1, 1};
+    const char *wrapped[] = { "中文。日本", "中（文）日", "a\xc2\xa0" "b c",
+        "a\xe2\x81\xa0" "b c", "ab\xe2\x80\x8b" "cd", "ééééé", "🇺🇸👩‍💻中", "中A" };
+    const int margins[] = {4, 4, 2, 1, 2, 2, 2, 1};
+    const int breaks[] = {3, 3, 5, 6, 5, 4, 8, 3};
+    const char *hard[] = {"中文。日本", "中（文）日", "a\xc2\xa0" "b c", "ab\xe2\x80\x8b" "cd"};
+    const char *expected[] = {"中\n文。\n日本", "中\n（文）\n日", ("a\xc2\xa0" "b\nc"), "ab\xe2\x80\x8b\ncd"};
+    const int hardMargins[] = {4, 4, 2, 2};
+    TextDSetWrapMode(display, False, 0);
+    TextDSetScroll(display, 1, 0);
+    XtVaSetValues(display->w, textNutf8Font, "DejaVu Sans:size=14", NULL);
+    composed = clusterImage(display, "é");
+    decomposed = clusterImage(display, "e\xcc\x81");
+    assert(composed && decomposed);
+    for (j = 0; j < composed->height; j++) for (i = 0; i < composed->width; i++)
+        assert(XGetPixel(composed, i, j) == XGetPixel(decomposed, i, j));
+    XDestroyImage(composed); XDestroyImage(decomposed);
+    for (i = 0; i < (int)(sizeof(shaped)/sizeof(*shaped)); i++) {
+        utf8Font *probe = Utf8FontOpen(display->w, "DejaVu Sans:size=14");
+        assert(probe);
+        shapedGlyphCount = 0;
+        Utf8FontWidth(probe, shaped[i], strlen(shaped[i]), 0);
+        fprintf(stderr, "Shaping probe %s: %u glyphs, missing=%d\n", shaped[i],
+                shapedGlyphCount, missingShapedGlyph);
+        assert(shapedGlyphCount == glyphCounts[i] && !missingShapedGlyph);
+        Utf8FontClose(probe);
+        BufSetAll(buf, shaped[i]);
+        assert(BufNextGrapheme(buf, 0) == buf->length);
+        assert(TextDPositionToXY(display, 0, &x, &y));
+        assert(TextDPositionToXY(display, buf->length, &nx, &ny));
+        fprintf(stderr, "Shaped cluster %s: %d pixels\n", shaped[i], nx-x);
+        assert(nx > x && nx-x < 64);
+        assert(TextDXYToPosition(display, nx-1, ny) == buf->length);
+        repaint(display); checkPixels(display, x, nx-x);
+    }
+    for (i = 0; i < 4; i++)
+        assert(Utf8FontWidth(display->utf8Font, "e\xcc\x81", 3, i) ==
+                Utf8FontWidth(display->utf8Font, "é", 2, i));
+    {
+        char marks[603];
+        marks[0] = 'x';
+        for (i = 0; i < 300; i++) memcpy(marks+1+2*i, "\xcc\x81", 2);
+        marks[601] = 'Z'; marks[602] = 0;
+        BufSetAll(buf, marks);
+        assert(TextDPositionToXY(display, 601, &x, &y));
+        assert(x-display->left == Utf8FontWidth(display->utf8Font, "x\xcc\x81", 3, 0));
+        repaint(display);
+    }
+    BufSetAll(buf, "Shaping: é = é   x́ ä ô ñ\nEmoji: 👩‍💻 👨‍👩‍👧‍👦 👍🏽 🇺🇸 1️⃣\nPresentation: ☺︎ ☺️   ❤️\nCJK wrapping: 中文。日本（言語）");
+    TextDSetInsertPosition(display, 0); TextDSetScroll(display, 1, 0);
+    repaint(display); checkPixels(display, display->left, 64);
+    screenshot(display, "utf8-shaping.ppm");
+    XtVaSetValues(display->w, textNutf8Font, "monospace:size=12", NULL);
+    for (i = 0; i < (int)(sizeof(wrapped)/sizeof(*wrapped)); i++) {
+        BufSetAll(buf, wrapped[i]);
+        TextDSetWrapMode(display, True, margins[i]);
+        assert(TextDCountForwardNLines(display, 0, 1, True) == breaks[i]);
+        p = 0;
+        while (p < buf->length) {
+            next = TextDCountForwardNLines(display, p, 1, True);
+            assert(next > p && BufStartOfGrapheme(buf, next) == next);
+            p = next;
+        }
+        BufInsert(buf, 0, "é");
+        assert(display->nBufferLines == TextDCountLines(display, 0, buf->length, True));
+        BufRemove(buf, 0, 2);
+        assert(TextDCountForwardNLines(display, 0, 1, True) == breaks[i]);
+        TextDSetWrapMode(display, False, 0);
+    }
+    /* Glued text remains reachable when it is wider than the viewport. */
+    BufSetAll(buf, "aaaaaaaa\xc2\xa0" "bbbbbbbb");
+    TextDResize(display, 16, height);
+    TextDSetWrapMode(display, True, 0);
+    assert(TextDCountLines(display, 0, buf->length, True) == 0);
+    assert(XtIsManaged(display->hScrollBar));
+    TextDSetScroll(display, 1, 24);
+    assert(display->horizOffset > 0);
+    TextDSetScroll(display, 1, 0);
+    TextDSetWrapMode(display, False, 0);
+    TextDResize(display, width, height);
+    for (i = 0; i < 4; i++) {
+        BufSetAll(buf, ""); TextDSetInsertPosition(display, 0);
+        XtVaSetValues(display->w, textNautoWrap, True, textNwrapMargin, hardMargins[i], NULL);
+        TextInsertAtCursor(display->w, (char *)hard[i], NULL, True, True);
+        assertContents(buf, expected[i]);
+    }
+    BufSetAll(buf, ""); TextDSetInsertPosition(display, 0);
+    XtVaSetValues(display->w, textNwrapMargin, 2, NULL);
+    TextInsertAtCursor(display->w, "aa ", NULL, True, True);
+    assertContents(buf, "aa\n");
+    XtVaSetValues(display->w, textNautoWrap, False, textNwrapMargin, 0, NULL);
+}
+
 int main(int argc, char **argv)
 {
     XtAppContext app;
-    Widget shell, text, hbar, vbar;
+    Widget shell, auxiliaries, text, hbar, vbar;
     textBuffer *buf;
     textDisp *display;
     WindowInfo window;
@@ -485,9 +618,12 @@ int main(int argc, char **argv)
     XtSetLanguageProc(NULL, NULL, NULL);
     shell = XtVaAppInitialize(&app, "NEditUtf8Test", NULL, 0,
             &argc, argv, NULL, NULL);
-    /* Unmanaged auxiliary shells avoid requiring the application UI. */
-    hbar = XtVaCreateWidget("hbar", xmScrollBarWidgetClass, shell, NULL);
-    vbar = XtVaCreateWidget("vbar", xmScrollBarWidgetClass, shell, NULL);
+    /* Scrollbar management must not replace the application shell's sole
+       managed child, or pixel tests would read an unmapped text window. */
+    auxiliaries = XtVaAppCreateShell("aux", "NEditUtf8Test",
+            applicationShellWidgetClass, XtDisplay(shell), NULL);
+    hbar = XtVaCreateWidget("hbar", xmScrollBarWidgetClass, auxiliaries, NULL);
+    vbar = XtVaCreateWidget("vbar", xmScrollBarWidgetClass, auxiliaries, NULL);
     text = XtVaCreateManagedWidget("text", textWidgetClass, shell,
             textNhScrollBar, hbar, textNvScrollBar, vbar,
             textNautoShowInsertPos, False, textNemulateTabs, 0,
@@ -502,8 +638,8 @@ int main(int argc, char **argv)
     {
         Widget twinShell = XtVaAppCreateShell("twin", "NEditUtf8Test",
                 applicationShellWidgetClass, XtDisplay(shell), NULL);
-        Widget twinH = XtVaCreateWidget("hbar", xmScrollBarWidgetClass, twinShell, NULL);
-        Widget twinV = XtVaCreateWidget("vbar", xmScrollBarWidgetClass, twinShell, NULL);
+        Widget twinH = XtVaCreateWidget("hbar", xmScrollBarWidgetClass, auxiliaries, NULL);
+        Widget twinV = XtVaCreateWidget("vbar", xmScrollBarWidgetClass, auxiliaries, NULL);
         Widget twin = XtVaCreateManagedWidget("text", textWidgetClass, twinShell,
                 textNhScrollBar, twinH, textNvScrollBar, twinV,
                 textNautoShowInsertPos, False, textNblinkRate, 0, NULL);
@@ -572,6 +708,7 @@ int main(int argc, char **argv)
 
     checkLayout(display);
     checkPhaseOne(display, &window);
+    checkPhaseThree(display);
 
     BufSetEncoding(buf, BUF_ENCODING_8BIT);
     TextDSetFont(display, display->fontStruct);
@@ -587,6 +724,7 @@ int main(int argc, char **argv)
     assertContents(buf, "A Z");
 
     XtDestroyWidget(shell);
+    XtDestroyWidget(auxiliaries);
     XtDestroyApplicationContext(app);
     puts("Motif UTF-8 drawing, layout, wrapping, editing, undo/redo, and legacy mode passed.");
     return 0;

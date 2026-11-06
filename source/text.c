@@ -31,6 +31,7 @@
 #include "text.h"
 #include "textP.h"
 #include "textBuf.h"
+#include "utf8Break.h"
 #include "textDisp.h"
 #include "textSel.h"
 #include "textDrag.h"
@@ -4056,8 +4057,8 @@ static char *wrapText(TextWidget tw, char *startLine, char *text, int bufOffset,
 
 /*
 ** Wraps the end of a line beginning at lineStartPos and ending at lineEndPos
-** in "buf", at the last white-space on the line >= limitPos.  (The implicit
-** assumption is that just the last character of the line exceeds the wrap
+** in "buf", at the last allowed Unicode break (legacy: whitespace) >= limitPos.
+** The implicit assumption is that just the last character of the line exceeds the wrap
 ** margin, and anywhere on the line we can wrap is correct).  Returns False if
 ** unable to wrap the line.  "breakAt", returns the character position at
 ** which the line was broken,
@@ -4073,20 +4074,37 @@ static int wrapLine(TextWidget tw, textBuffer *buf, int bufOffset,
     	int lineStartPos, int lineEndPos, int limitPos, int *breakAt,
 	int *charsAdded)
 {
-    int p, length, column;
+    int p, length, column, remove = 1;
     char c, *indentStr;
-    
-    /* Scan backward for whitespace or BOL.  If BOL, return False, no
-       whitespace in line at which to wrap */
-    for (p=lineEndPos; ; p = BufPrevGrapheme(buf, p)) {
-	if (p < lineStartPos || p < limitPos)
-     	    return False;
-     	c = BufGetCharacter(buf, p);
-        if ((c == '\t' || c == ' ') && BufNextGrapheme(buf, p) == p + 1)
-     	    break;
-        if (p == 0) return False;
+
+    if (buf->encoding == BUF_ENCODING_UTF8) {
+        c = BufGetCharacter(buf, lineEndPos);
+        if ((c == ' ' || c == '\t') && lineEndPos >= limitPos &&
+                BufNextGrapheme(buf, lineEndPos) == lineEndPos + 1 &&
+                (BufLineBreak(buf, lineEndPos + 1) & UTF8_BREAK_ALLOWED)) {
+            p = lineEndPos;
+        } else {
+            for (p = lineEndPos; p > lineStartPos && p >= limitPos;
+                    p = BufPrevGrapheme(buf, p))
+                if (BufLineBreak(buf, p) & UTF8_BREAK_ALLOWED) break;
+            if (p <= lineStartPos || p < limitPos) return False;
+            remove = 0;
+            if (p > limitPos && BufPrevGrapheme(buf, p) == p - 1 &&
+                    (BufGetCharacter(buf, p - 1) == ' ' ||
+                     BufGetCharacter(buf, p - 1) == '\t')) {
+                p--;
+                remove = 1;
+            }
+        }
+    } else {
+        for (p = lineEndPos; ; p = BufPrevGrapheme(buf, p)) {
+            if (p < lineStartPos || p < limitPos) return False;
+            c = BufGetCharacter(buf, p);
+            if (c == '\t' || c == ' ') break;
+            if (!p) return False;
+        }
     }
-    
+
     /* Create an auto-indent string to insert to do wrap.  If the auto
        indent string reaches the wrap position, slice the auto-indent
        back off and return to the left margin */
@@ -4102,13 +4120,12 @@ static int wrapLine(TextWidget tw, textBuffer *buf, int bufOffset,
     	length = 1;
     }
     
-    /* Replace the whitespace character with the auto-indent string
-       and return the stats */
-    BufReplace(buf, p, p+1, indentStr);
+    /* Replace a plain separator or insert at the Unicode boundary. */
+    BufReplace(buf, p, p+remove, indentStr);
     if (tw->text.autoIndent || tw->text.smartIndent)
     	NEditFree(indentStr);
     *breakAt = p;
-    *charsAdded = length-1;
+    *charsAdded = length-remove;
     return True;
 }
 
