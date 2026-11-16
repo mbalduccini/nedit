@@ -48,6 +48,27 @@ def check_application_controls(env):
         assert "nedit.utf8: True" in data and "monospace:size=16" in data
 
 
+def check_ui_font_overrides(env):
+    cases = {
+        "all": ["*buttonFontList: fixed", "*labelFontList: fixed", "*textFontList: fixed"],
+        "default": ["*defaultFontList: fixed"],
+        "label": ["*labelFontList: fixed"],
+        "table": ["*labelRenderTable: customRT", "*customRT.fontType: FONT_IS_FONT",
+                  "*customRT.fontName: fixed"],
+        "shell": ["*textShell*labelFontList: fixed"],
+        "widget": ["*fileMenu.fontList: fixed"],
+    }
+    with tempfile.TemporaryDirectory(prefix="ui-font-overrides-", dir=tests_dir) as temp:
+        prefs = Path(temp) / "prefs"
+        prefs.mkdir()
+        for mode, resources in cases.items():
+            args = [str(tests_dir / "test_utf8_application"), "-svrname", "", "-8bit"]
+            for resource in resources:
+                args += ["-xrm", resource]
+            subprocess.run(args, cwd=temp, env=dict(env, NEDIT_HOME=str(prefs),
+                           NEDIT_TEST_UI_FONT_OVERRIDE=mode), check=True, timeout=30)
+
+
 def check_phase_one_files(env):
     with tempfile.TemporaryDirectory(prefix="utf8-phase1-", dir=tests_dir) as temp:
         task_dir = Path(temp)
@@ -253,6 +274,7 @@ with tempfile.TemporaryFile(mode="w+") as log:
         subprocess.run([str(tests_dir / "test_utf8_widget")],
                        cwd=tests_dir, env=env, check=True, timeout=30)
         check_application_controls(env)
+        check_ui_font_overrides(env)
         check_editor(env)
         check_phase_one_files(env)
         check_phase_two(env)

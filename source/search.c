@@ -64,6 +64,7 @@
 #endif /*VMS*/
 
 #include <Xm/Xm.h>
+#include "motifCompat.h"
 #include <X11/Shell.h>
 #include <Xm/XmP.h>
 #include <Xm/Form.h>
@@ -597,7 +598,7 @@ static void getSelectionCB(Widget w, XtPointer si, Atom *selection,
 
 /* Motif's search fields have their own renderer, separate from the document.
    OpenMotif with Xft can decode/draw their locale text with a Fontconfig font. */
-#if defined(HAVE_XFT) && defined(USE_XFT) && USE_XFT
+#if defined(HAVE_XFT) && NEDIT_MOTIF_XFT
 typedef struct {
     XmRenderTable legacy;
     char *name;
@@ -616,9 +617,7 @@ static void freeSearchFieldFont(Widget w, XtPointer arg, XtPointer data)
 
 static void setSearchFieldFont(WindowInfo *window, Widget field)
 {
-#if defined(HAVE_XFT) && defined(USE_XFT) && USE_XFT
-    Arg args[3];
-    XmRendition rendition;
+#if defined(HAVE_XFT) && NEDIT_MOTIF_XFT
     XmRenderTable table;
     searchFieldFont *font;
     const char *name;
@@ -642,18 +641,12 @@ static void setSearchFieldFont(WindowInfo *window, Widget field)
     }
     name = ((TextWidget)window->textArea)->text.textD->utf8FontName;
     if (font->name && !strcmp(font->name, name)) return;
-    XtSetArg(args[0], XmNfontType, XmFONT_IS_XFT);
-    XtSetArg(args[1], XmNfontName, name);
-    XtSetArg(args[2], XmNloadModel, XmLOAD_IMMEDIATE);
-    rendition = XmRenditionCreate(field, XmFONTLIST_DEFAULT_TAG, args, 3);
-    if (!rendition) return;
-    table = XmRenderTableAddRenditions(NULL, &rendition, 1, XmMERGE_REPLACE);
+    table = CreateMotifUtf8RenderTable(field, name);
     if (table) {
         XtVaSetValues(field, XmNrenderTable, table, NULL);
         XmRenderTableFree(table);
         NEditFree(font->name); font->name = NEditStrdup(name);
     }
-    XmRenditionFree(rendition);
 #else
     (void)window;
     (void)field;

@@ -104,3 +104,6 @@ regularExp.o highlight.o: unicodeRegex.h
 
 utf8Break.o: utf8Break.c utf8Break.h utf8.h ../util/nedit_malloc.h
 textBuf.o text.o textDisp.o shift.o: utf8Break.h
+
+search.o calltips.o nedit.o motifCompat.o: motifCompat.h
+motifCompat.o: motifCompat.c

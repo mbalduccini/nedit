@@ -3835,7 +3835,8 @@ static void utf8FontApply(Widget w, XtPointer arg, XtPointer data)
     XmSelectionBoxCallbackStruct *cb = (XmSelectionBoxCallbackStruct *)data;
     char *name = NULL;
     utf8Font *font;
-    if (!XmStringGetLtoR(cb->value, XmFONTLIST_DEFAULT_TAG, &name)) return;
+    name = GetXmStringText(cb->value);
+    if (!name) return;
     if (!*name || strlen(name) >= MAX_FONT_LEN) { XtFree(name); return; }
     font = Utf8FontOpen(state->window->textArea, name);
     if (!font) {

@@ -47,6 +47,7 @@
 #include "interpret.h"
 #include "parse.h"
 #include "help.h"
+#include "motifCompat.h"
 #include "../util/misc.h"
 #include "../util/printUtils.h"
 #include "../util/fileUtils.h"
@@ -159,7 +160,10 @@ static char *fallbackResources[] = {
        as insensitive text buttons are blank.  That bug is fixed in 2.3.3.
       */
 
-#if (XmVersion >= 2003 && XmUPDATE_LEVEL >= 3 && USE_XFT == 1)
+#if defined(HAVE_XFT) && NEDIT_MOTIF_XFT && XmVersion >= 2005
+    /* Install safe, inherited Xft tables on TheAppShell instead of using
+       Motif 2.5's string converter and font-name cache. */
+#elif (XmVersion >= 2003 && XmUPDATE_LEVEL >= 3 && USE_XFT == 1)
     "*buttonRenderTable:        defaultRT",
     "*labelRenderTable:         defaultRT",
     "*textRenderTable:          fixedRT",
@@ -530,6 +534,7 @@ int main(int argc, char **argv)
                                          TheDisplay,
                                          NULL,
                                          0);
+    InitMotifDefaultFonts(TheAppShell);
     
     /* Restore the original bindings ASAP such that other apps are not affected. */
     restoreInsaneVirtualKeyBindings(invalidBindings);

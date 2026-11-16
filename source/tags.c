@@ -1273,8 +1273,11 @@ static void findAllCB(Widget parent, XtPointer client_data, XtPointer call_data)
         return;
     }
     
-    XmStringGetLtoR(cbs->value,XmFONTLIST_DEFAULT_TAG,&eptr);
-    if ((i = atoi(eptr)-1) < 0) {
+    eptr = GetXmStringText(cbs->value);
+    if (!eptr) return;
+    i = atoi(eptr)-1;
+    NEditFree(eptr);
+    if (i < 0) {
         XBell(TheDisplay, 0);
         return;
     }

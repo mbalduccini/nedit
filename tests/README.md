@@ -30,6 +30,11 @@ The application control test uses the real editor startup and menu callbacks.
 It checks document encoding toggles, saved default resources, split-pane font
 inheritance, drag completion with undo/redo, and the Fontconfig chooser's
 Apply, OK and Cancel buttons.
+Compound-string conversion checks cover empty text, Unicode, newlines and
+file-dialog directory/pattern defaults with Motif 2.5.
+UI font checks cover the Xft Sans defaults for menus/status labels, their
+consistency with the status text, repeated window/dialog cleanup, and explicit
+font-list/render-table overrides at application, shell and widget levels.
 
 It also exercises real clipboard and PRIMARY paste into Find with accented
 Latin, Greek, CJK, supplementary scalars and combining sequences, verifying
@@ -84,3 +89,9 @@ Composed/decomposed accents are compared pixel-for-pixel, and actual glyph ink
 and background are required. `tests/utf8-shaping.ppm` is an ignored screenshot
 for visual inspection. The pixel fixture keeps auxiliary scrollbars in a
 separate shell so their management cannot unmap the text window.
+
+`python tests/check_nc_utf8.py` verifies the `source/nc-utf8` launcher separately.
+On Xvfb it starts an unnamed legacy server, invokes the launcher through a
+symlink on PATH with a decoy `nedit`, and verifies the absolute workspace server
+executable, UTF-8 grapheme editing, distinct server properties and reuse of the
+same process. Temporary preferences and files keep the live editor untouched.

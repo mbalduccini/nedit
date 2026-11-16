@@ -42,6 +42,7 @@
 #include <limits.h>
 
 #include <Xm/Xm.h>
+#include "motifCompat.h"
 #include <Xm/Label.h>
 #include <X11/Shell.h>
 
@@ -278,23 +279,19 @@ int ShowCalltip(WindowInfo *window, char *text, Boolean anchored,
                 NULL );
     }
     
-#if defined(HAVE_XFT) && defined(USE_XFT) && USE_XFT
+#if defined(HAVE_XFT) && NEDIT_MOTIF_XFT
     if (!textD->calltipLegacyTable) {
         XmRenderTable original;
         XtVaGetValues(textD->calltipW,XmNrenderTable,&original,NULL);
         textD->calltipLegacyTable=XmRenderTableCopy(original,NULL,0);
     }
     if (textD->buffer->encoding == BUF_ENCODING_UTF8) {
-        Arg args[3];
-        XmRendition rendition;
-        XmRenderTable table;
-        XtSetArg(args[0],XmNfontType,XmFONT_IS_XFT);
-        XtSetArg(args[1],XmNfontName,textD->utf8FontName);
-        XtSetArg(args[2],XmNloadModel,XmLOAD_IMMEDIATE);
-        rendition=XmRenditionCreate(textD->calltipW,XmFONTLIST_DEFAULT_TAG,args,3);
-        table=XmRenderTableAddRenditions(NULL,&rendition,1,XmMERGE_REPLACE);
-        XtVaSetValues(textD->calltipW,XmNrenderTable,table,NULL);
-        XmRenderTableFree(table);XmRenditionFree(rendition);
+        XmRenderTable table = CreateMotifUtf8RenderTable(textD->calltipW,
+                textD->utf8FontName);
+        if (table) {
+            XtVaSetValues(textD->calltipW,XmNrenderTable,table,NULL);
+            XmRenderTableFree(table);
+        }
     } else XtVaSetValues(textD->calltipW,XmNrenderTable,textD->calltipLegacyTable,NULL);
 #endif
     /* Set the text on the label */

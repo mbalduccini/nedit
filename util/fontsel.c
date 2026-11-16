@@ -986,7 +986,7 @@ static void fontAction(Widget widget, xfselControlBlkType *ctrlBlk,
 {
     char    *sel;
 
-    XmStringGetLtoR(call_data->item, XmSTRING_DEFAULT_CHARSET, &sel);
+    sel = GetXmStringText(call_data->item);
 
     if (ctrlBlk->sel1 == NULL)
     {
@@ -1025,7 +1025,7 @@ static void styleAction(Widget widget, xfselControlBlkType *ctrlBlk,
 {
     char    *sel;
 
-    XmStringGetLtoR(call_data->item, XmSTRING_DEFAULT_CHARSET, &sel);
+    sel = GetXmStringText(call_data->item);
 
     if (ctrlBlk->sel2 == NULL)
     {
@@ -1063,7 +1063,7 @@ static void sizeAction(Widget widget, xfselControlBlkType *ctrlBlk,
 {
     char    *sel;
 
-    XmStringGetLtoR(call_data->item, XmSTRING_DEFAULT_CHARSET, &sel);
+    sel = GetXmStringText(call_data->item);
 
     if (ctrlBlk->sel3 == NULL)
     {

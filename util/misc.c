@@ -982,6 +982,35 @@ void PopDownBugPatch(Widget w)
 */
 char *GetXmStringText(XmString fromString)
 {
+#if XmVersion >= 2005
+    /* Motif 2.5's obsolete segment readers can return a charset tag instead
+       of the text. Read components directly to preserve text and newlines
+       without adding direction markers from compound-string layout. */
+    XmStringContext context;
+    XmStringComponentType type;
+    unsigned int length;
+    XtPointer value;
+    char *text = NEditMalloc(1);
+    size_t used = 0;
+    text[0] = '\0';
+    if (!XmStringInitContext(&context, fromString)) return text;
+    while ((type = XmStringGetNextTriple(context, &length, &value)) !=
+            XmSTRING_COMPONENT_END) {
+        if (type == XmSTRING_COMPONENT_TEXT ||
+                type == XmSTRING_COMPONENT_LOCALE_TEXT) {
+            text = NEditRealloc(text, used + length + 1);
+            if (length) memcpy(text + used, value, length);
+            used += length;
+        } else if (type == XmSTRING_COMPONENT_SEPARATOR) {
+            text = NEditRealloc(text, used + 2);
+            text[used++] = '\n';
+        }
+        XtFree(value);
+    }
+    text[used] = '\0';
+    XmStringFreeContext(context);
+    return text;
+#else
     XmStringContext context;
     char *text, *toPtr, *toString, *fromPtr;
     XmStringCharSet charset;
@@ -1011,6 +1040,7 @@ char *GetXmStringText(XmString fromString)
     *toPtr++ = '\0';
     XmStringFreeContext(context);
     return toString;
+#endif
 }
 
 /*

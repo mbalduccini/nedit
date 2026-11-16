@@ -14,6 +14,8 @@
 #include "shift.h"
 #include "utf8.h"
 #include "calltips.h"
+#include "../util/misc.h"
+#include "../util/getfiles.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,7 +23,6 @@
 #include <Xm/SelectioB.h>
 #include <Xm/ToggleB.h>
 #include <Xm/Text.h>
-#include <Xm/TextP.h>
 #include <X11/Xutil.h>
 
 static Time serverTime(Widget w)
@@ -463,6 +464,66 @@ static int renditionType(Widget w)
     for(i=0;i<count;i++) XtFree(tags[i]);XtFree((char *)tags);
     return type;
 }
+
+static void checkUiFont(Widget widget, const char *expected)
+{
+    char *name = fieldFontName(widget);
+    if (strcmp(name, expected))
+        fprintf(stderr, "%s font: %s, expected %s\n", XtName(widget), name, expected);
+    assert(renditionType(widget) == (!strcmp(expected, "fixed") ?
+            XmFONT_IS_FONT : XmFONT_IS_XFT));
+    assert(!strcmp(name, expected));
+    XtFree(name);
+}
+
+static void checkUiFonts(WindowInfo *window)
+{
+    Widget menu = XtNameToWidget(window->menuBar, "*fileMenu");
+    assert(menu);
+    checkUiFont(menu, "Sans:size=9");
+    checkUiFont(window->statsLineColNo, "Sans:size=9");
+    checkUiFont(window->statsLine, "Sans:size=9");
+}
+
+static void checkUiFontLifecycle(WindowInfo *window)
+{
+    int i;
+    checkUiFonts(window);
+    for (i = 0; i < 4; i++) {
+        WindowInfo *other = CreateWindow("Font lifecycle", NULL, False);
+        Widget dialog = CreatePromptDialog(other->shell, "fontLifecycle", NULL, 0);
+        checkUiFonts(other);
+        checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_OK_BUTTON), "Sans:size=9");
+        checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_SELECTION_LABEL), "Sans:size=9");
+        checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_TEXT), "Monospace:size=9");
+        XtManageChild(dialog);
+        XSync(XtDisplay(dialog), False);
+        XtDestroyWidget(XtParent(dialog));
+        CloseWindow(other);
+        checkUiFonts(window);
+    }
+    puts("Xft UI defaults, status/menu consistency and repeated window/dialog cleanup passed.");
+}
+
+static void checkUiFontOverrides(WindowInfo *window, const char *mode)
+{
+    Widget menu = XtNameToWidget(window->menuBar, "*fileMenu");
+    Widget dialog = CreatePromptDialog(window->shell, "fontOverride", NULL, 0);
+    int all = !strcmp(mode, "all") || !strcmp(mode, "default");
+    int label = all || !strcmp(mode, "label") || !strcmp(mode, "table");
+    int shell = !strcmp(mode, "shell");
+    checkUiFont(menu, all || !strcmp(mode, "widget") ? "fixed" : "Sans:size=9");
+    checkUiFont(XtNameToWidget(window->menuBar, "*fileMenu.new"),
+            all ? "fixed" : "Sans:size=9");
+    checkUiFont(window->statsLineColNo, label || shell ? "fixed" : "Sans:size=9");
+    checkUiFont(window->statsLine, label || shell ? "fixed" : "Sans:size=9");
+    /* SelectionBox applies its label font to the standard dialog buttons. */
+    checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_OK_BUTTON), label || shell ? "fixed" : "Sans:size=9");
+    checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_SELECTION_LABEL), label || shell ? "fixed" : "Sans:size=9");
+    checkUiFont(XmSelectionBoxGetChild(dialog, XmDIALOG_TEXT), all ? "fixed" : "Monospace:size=9");
+    XtDestroyWidget(XtParent(dialog));
+    printf("UI font resource override (%s) passed.\n", mode);
+}
 static void checkUnicodeCalltip(WindowInfo *window)
 {
     textDisp *display=((TextWidget)window->lastFocus)->text.textD;
@@ -542,7 +603,7 @@ static void checkSearchDialog(WindowInfo *window)
         BufUnselect(window->buffer);
         TextSetCursorPos(window->lastFocus, 0);
         DoFindDlog(window, SEARCH_FORWARD, True, SEARCH_CASE_SENSE, CurrentTime);
-        assert(((XmTextWidget)window->findText)->text.output->data->use_xft);
+        assert(renditionType(window->findText) == XmFONT_IS_XFT);
         assert(XmTextPaste(window->findText));
         value = XmTextGetString(window->findText);
         assert(!strcmp(value, sample)); XtFree(value);
@@ -578,8 +639,8 @@ static void checkSearchDialog(WindowInfo *window)
     TextSetCursorPos(window->lastFocus, 0);
     XtUnmanageChild(window->findDlog);
     DoFindReplaceDlog(window, SEARCH_FORWARD, True, SEARCH_CASE_SENSE, CurrentTime);
-    assert(((XmTextWidget)window->replaceText)->text.output->data->use_xft);
-    assert(((XmTextWidget)window->replaceWithText)->text.output->data->use_xft);
+    assert(renditionType(window->replaceText) == XmFONT_IS_XFT);
+    assert(renditionType(window->replaceWithText) == XmFONT_IS_XFT);
     XmTextSetString(window->replaceText, "");
     assert(XmTextPaste(window->replaceText));
     XmTextSetString(window->replaceWithText, "");
@@ -594,7 +655,7 @@ static void checkSearchDialog(WindowInfo *window)
     XtUnmanageChild(window->replaceDlog);
     BufUnselect(window->buffer); TextSetCursorPos(window->lastFocus, 0);
     BeginISearch(window, SEARCH_FORWARD);
-    assert(((XmTextWidget)window->iSearchText)->text.output->data->use_xft);
+    assert(renditionType(window->iSearchText) == XmFONT_IS_XFT);
     assert(XmTextPaste(window->iSearchText));
     value = XmTextGetString(window->iSearchText);
     assert(!strcmp(value, samples[5])); XtFree(value);
@@ -605,7 +666,7 @@ static void checkSearchDialog(WindowInfo *window)
     value = fieldFontName(window->findText);
     assert(!strcmp(value, legacyFont)); XtFree(value);
     SetDocumentEncoding(window, True);
-    assert(((XmTextWidget)window->findText)->text.output->data->use_xft);
+    assert(renditionType(window->findText) == XmFONT_IS_XFT);
     SetUtf8Font(window, "DejaVu Sans:size=15");
     value = fieldFontName(window->findText);
     assert(!strcmp(value, "DejaVu Sans:size=15")); XtFree(value);
@@ -628,6 +689,32 @@ static void checkSearchDialog(WindowInfo *window)
 }
 
 static int dialogMode, closed;
+
+static void checkMotifStrings(void)
+{
+    const char *samples[] = {"", "DejaVu Sans:size=15", "café 中 𐐀", "one\ntwo"};
+    XmString string;
+    char *text;
+    int i;
+    for (i = 0; i < 4; i++) {
+        string = XmStringCreateLocalized((char *)samples[i]);
+        text = GetXmStringText(string);
+        assert(text && !strcmp(text, samples[i]));
+        XtFree(text); XmStringFree(string);
+        string = XmStringCreateLtoR((char *)samples[i], XmSTRING_DEFAULT_CHARSET);
+        text = GetXmStringText(string);
+        assert(text && !strcmp(text, samples[i]));
+        XtFree(text); XmStringFree(string);
+    }
+    SetFileDialogDefaultDirectory("/tmp/café 中/");
+    SetFileDialogDefaultPattern("*.c");
+    text = GetFileDialogDefaultDirectory();
+    assert(text && !strcmp(text, "/tmp/café 中/")); XtFree(text);
+    text = GetFileDialogDefaultPattern();
+    assert(text && !strcmp(text, "*.c")); XtFree(text);
+    SetFileDialogDefaultDirectory(NULL); SetFileDialogDefaultPattern(NULL);
+    puts("Motif compound-string text, Unicode, newlines and file-dialog defaults passed.");
+}
 
 static void chooseFont(XtPointer arg, XtIntervalId *id)
 {
@@ -666,7 +753,14 @@ void __wrap_XtAppMainLoop(XtAppContext app)
     int i, type, x, y, nx, ny;
     Widget text;
     char *bytes;
+    const char *fontOverride = getenv("NEDIT_TEST_UI_FONT_OVERRIDE");
     assert(window && window->next == NULL);
+    if (fontOverride) {
+        checkUiFontOverrides(window, fontOverride);
+        exit(0);
+    }
+    checkUiFontLifecycle(window);
+    checkMotifStrings();
     buf = window->buffer;
     assert(buf->encoding == BUF_ENCODING_UTF8);
     BufSetAll(buf, initial);

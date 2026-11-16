@@ -364,8 +364,7 @@ unsigned DialogF(int dialog_type, Widget parent, unsigned n, const char* title,
 	    argcount = 0; /* Pass back string user entered */
 	    XtSetArg (args[argcount], XmNtextString, &input_string_xms); argcount++;
 	    XtGetValues (dialog, args, argcount);
-	    XmStringGetLtoR (input_string_xms, XmSTRING_DEFAULT_CHARSET,
-		&input_string_ptr);
+	    input_string_ptr = GetXmStringText(input_string_xms);
 	    strcpy (input_string, input_string_ptr);  /* This step is necessary */
 	    XmStringFree(input_string_xms );
             NEditFree(input_string_ptr);
@@ -612,7 +611,8 @@ static void recurseCreateMnemonics(Widget w, Boolean *mnemonicUsed)
             int c;
             
             XtVaGetValues(child, XmNlabelString, &xmslabel, NULL);
-            if (XmStringGetLtoR(xmslabel, XmSTRING_DEFAULT_CHARSET, &label))
+            label = GetXmStringText(xmslabel);
+            if (label)
             {
                 /* Scan through the string to see if the label is already used */            
                 int labelLen = strlen(label);

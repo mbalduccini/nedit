@@ -426,7 +426,7 @@ int HandleCustomExistFileSB(Widget existFileSB, char *filename)
 	if (DefaultPattern != NULL) XmStringFree(DefaultPattern);
 	DefaultDirectory = cDir;
 	DefaultPattern = cPattern;
-	XmStringGetLtoR(cFileString, XmSTRING_DEFAULT_CHARSET, &fileString);
+	fileString = GetXmStringText(cFileString);
         /* Motif 2.x seem to contain a bug that causes it to return only 
            the relative name of the file in XmNdirSpec when XmNpathMode is set
            to XmPATH_MODE_RELATIVE (through X resources), although the man
@@ -445,7 +445,7 @@ int HandleCustomExistFileSB(Widget existFileSB, char *filename)
 	    strcpy(filename, fileString);
 	} else {
 	    /* Concatenate the directory name and the file name */
-   	    XmStringGetLtoR(cDir, XmSTRING_DEFAULT_CHARSET, &dirString);
+            dirString = GetXmStringText(cDir);
 	    strcpy(filename, dirString);
 	    strcat(filename, fileString);
   	    NEditFree(dirString);
@@ -582,7 +582,7 @@ int HandleCustomNewFileSB(Widget newFileSB, char *filename, char *defaultName)
 	if (DefaultPattern != NULL) XmStringFree(DefaultPattern);
 	DefaultDirectory = cDir;
 	DefaultPattern = cPattern;
-	XmStringGetLtoR(cFileString, XmSTRING_DEFAULT_CHARSET, &fileString);
+	fileString = GetXmStringText(cFileString);
 	/* See note in existing file routines about Motif 2.x bug. */
 #ifdef VMS
 	/* VMS  won't return `/' as the 1st character of the full file spec.
@@ -596,7 +596,7 @@ int HandleCustomNewFileSB(Widget newFileSB, char *filename, char *defaultName)
 	    strcpy(filename, fileString);
 	} else {
 	    /* Concatenate the directory name and the file name */
-   	    XmStringGetLtoR(cDir, XmSTRING_DEFAULT_CHARSET, &dirString);
+            dirString = GetXmStringText(cDir);
 	    strcpy(filename, dirString);
 	    strcat(filename, fileString);
   	    NEditFree(dirString);
@@ -620,7 +620,7 @@ char *GetFileDialogDefaultDirectory(void)
     
     if (DefaultDirectory == NULL)
     	return NULL;
-    XmStringGetLtoR(DefaultDirectory, XmSTRING_DEFAULT_CHARSET, &string);
+    string = GetXmStringText(DefaultDirectory);
     return string;
 }
 
@@ -636,7 +636,7 @@ char *GetFileDialogDefaultPattern(void)
     
     if (DefaultPattern == NULL)
     	return NULL;
-    XmStringGetLtoR(DefaultPattern, XmSTRING_DEFAULT_CHARSET, &string);
+    string = GetXmStringText(DefaultPattern);
     return string;
 }
 
@@ -792,7 +792,7 @@ static void newFileOKCB(Widget	w, Boolean *client_data,
     int  response;		      /* response to dialog		 */
     struct stat buf;		      /* status from fstat		 */
     
-    XmStringGetLtoR(call_data->value, XmSTRING_DEFAULT_CHARSET, &filename);
+    filename = GetXmStringText(call_data->value);
     SelectResult = GFN_OK;
     length = strlen(filename);
     if (length == 0 || filename[length-1] == '/') {
@@ -860,7 +860,7 @@ static void existOkCB(Widget w, Boolean * client_data,
     int  fd;                          /* file descriptor                 */
     int  length;		      /* length of file name		 */
     
-    XmStringGetLtoR(call_data->value, XmSTRING_DEFAULT_CHARSET, &filename);
+    filename = GetXmStringText(call_data->value);
     SelectResult = GFN_OK;
     length = strlen(filename);
     if (length == 0 || filename[length-1] == '/') {
@@ -1023,7 +1023,7 @@ static void listCharEH(Widget w, XtPointer callData, XEvent *event,
        appropriate line in the list widget to select */
     selectPos = 0;
     for (i=0; i<nItems; i++) {
-    	XmStringGetLtoR(items[i], XmSTRING_DEFAULT_CHARSET, &itemString);
+        itemString = GetXmStringText(items[i]);
     	if (ParseFilename(itemString, name, path) != 0) {
 	   NEditFree(itemString);
 	   return;
@@ -1131,8 +1131,8 @@ static int compareXmStrings(const void *string1, const void *string2)
     char *s1, *s2;
     int result;
     
-    XmStringGetLtoR(*(XmString *)string1, XmSTRING_DEFAULT_CHARSET, &s1);
-    XmStringGetLtoR(*(XmString *)string2, XmSTRING_DEFAULT_CHARSET, &s2);
+    s1 = GetXmStringText(*(XmString *)string1);
+    s2 = GetXmStringText(*(XmString *)string2);
     result = strcmp(s1, s2);
     NEditFree(s1);
     NEditFree(s2);

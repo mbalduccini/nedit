@@ -204,6 +204,33 @@ are required. Launch the workspace binary explicitly:
 The empty server name keeps this instance standalone, including when an X
 resource normally enables server mode. It does not contact the running editor.
 
+After upgrading Termux libraries, force a complete rebuild to update library
+version dependencies in both executables:
+
+```sh
+make -j2 linux MAKE='make -B'
+```
+
+Use the recursive `MAKE` override rather than `make -B linux`: the root
+makefile's platform rule cannot remake `Makefile`. The Motif compatibility
+code recognizes 2.5's UTF-8 feature flag, supplies separate Xft font references
+for search fields and calltips, and uses supported compound-string conversion
+for font choosers and file dialogs.
+Motif 2.5 UI defaults restore Sans 9pt for menus and labels and Monospace 9pt
+for text fields. Safe application-shell render tables pass these fonts to
+descendant windows and dialogs without using the library's Xft name cache;
+explicit user font resources retain precedence. This applies in both document
+encoding modes.
+
+For client/server testing, use `./source/nc-utf8 path/to/file`. This launcher
+runs the workspace's `source/nc` with server name `classic-UTF-8` and an absolute
+startup command for its sibling `source/nedit -server -utf8 -utf8font
+'monospace:size=12'`. A symlink to this launcher (for example `~/bin/nc-utf8`) works
+from any directory. A direct symlink to the raw `source/nc` does **not** supply
+these settings: that binary defaults to the unnamed server and `nedit -server`
+from PATH. Normal client options remain available; explicit `-svrname` or
+`-svrcmd` arguments override the launcher's defaults.
+
 Use `-wrap` for wrapping at the window edge, or `-nowrap` to scroll long lines.
 Use a UTF-8 locale (for example `C.UTF-8`) for Motif input. The `-utf8` option
 selects UTF-8 interpretation for documents in that process; it does not transcode

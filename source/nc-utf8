@@ -1,0 +1,12 @@
+#!/bin/sh
+# Linux/Termux testing launcher. Keep this build separate from regular NEdit.
+# Resolve this file through symlinks so ~/bin/nc can point here.
+nc_utf8_path=$(readlink -f -- "$0") || exit 1
+nc_utf8_dir=$(dirname -- "$nc_utf8_path")
+# nc passes serverCommand through a shell. Quote the executable separately
+# from the arguments, including shell metacharacters in the checkout path.
+nc_utf8_executable=$(printf '%s' "$nc_utf8_dir/nedit" | sed 's/["\\$`]/\\&/g')
+exec "$nc_utf8_dir/nc" \
+    -svrname classic-UTF-8 \
+    -svrcmd "\"$nc_utf8_executable\" -server -utf8 -utf8font 'monospace:size=12'" \
+    "$@"
